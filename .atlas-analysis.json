@@ -1,0 +1,126 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "Sail Operator",
+  "projectDescription": "Kubernetes operator for managing Istio service mesh control plane lifecycle",
+  "theme": "aspen",
+  "primaryColor": "#446cb4",
+  "lightColor": "#9cb4d4",
+  "darkColor": "#d7dfed",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/overview",
+              "concepts/istio-resource",
+              "concepts/istiorevision-resource",
+              "concepts/istiorevisiontag-resource",
+              "concepts/istiocni-resource",
+              "concepts/ztunnel-resource"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/helm-values",
+              "configuration/profiles",
+              "configuration/update-strategies",
+              "configuration/version-management"
+            ]
+          },
+          {
+            "group": "Deployment Modes",
+            "pages": [
+              "deployment/sidecar-mode",
+              "deployment/ambient-mode",
+              "deployment/waypoint-proxies",
+              "deployment/coexistence"
+            ]
+          },
+          {
+            "group": "Advanced Deployment",
+            "pages": [
+              "advanced/multi-cluster",
+              "advanced/multiple-meshes",
+              "advanced/dual-stack",
+              "advanced/high-availability"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/upgrades",
+              "operations/monitoring",
+              "operations/certificate-management",
+              "operations/troubleshooting"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/openshift",
+              "integrations/gateways",
+              "integrations/observability",
+              "integrations/addons"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Custom Resources",
+            "pages": [
+              "api/istio",
+              "api/istiorevision",
+              "api/istiorevisiontag",
+              "api/istiocni",
+              "api/ztunnel"
+            ]
+          },
+          {
+            "group": "Configuration Types",
+            "pages": [
+              "api/values",
+              "api/cni-values",
+              "api/ztunnel-values"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Declarative Istio control plane management via Kubernetes custom resources",
+    "Support for both sidecar and ambient mesh deployment modes",
+    "Flexible update strategies: InPlace and RevisionBased upgrades",
+    "Multi-version support with n-2 Istio release compatibility",
+    "Multi-cluster and multi-mesh deployment capabilities",
+    "Native OpenShift integration with CNI plugin management",
+    "Automated workload migration during upgrades",
+    "Helm-based configuration with profile support"
+  ],
+  "publicApiSurface": [
+    "Istio (v1) - Main control plane resource",
+    "IstioRevision (v1) - Specific control plane revision",
+    "IstioRevisionTag (v1) - Revision tag for workload routing",
+    "IstioCNI (v1) - CNI plugin configuration",
+    "ZTunnel (v1) - Ambient mode tunnel component",
+    "Helm chart: sail-operator",
+    "make install - Install CRDs",
+    "make deploy - Deploy operator",
+    "kubectl apply -f samples/istio-sample.yaml - Deploy control plane"
+  ]
+}
