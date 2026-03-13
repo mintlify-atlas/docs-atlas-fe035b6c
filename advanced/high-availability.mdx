@@ -1,0 +1,435 @@
+---
+title: High Availability Configuration
+description: Configure Istio for production-grade high availability and resilience
+---
+
+By default, Istio deploys with a single control plane replica. For production environments, you should configure Istio in high availability (HA) mode to ensure resilience against failures and maintain service mesh operations during maintenance or unexpected issues.
+
+## Overview
+
+High availability in Istio ensures:
+
+- **Continuous operation** during control plane updates or failures
+- **Load distribution** across multiple istiod instances
+- **Fault tolerance** for control plane components
+- **Zero-downtime upgrades** when properly configured
+
+<Info>
+HA configuration is essential for production deployments but may be unnecessary for development or testing environments where resource efficiency is prioritized over resilience.
+</Info>
+
+## HA Approaches
+
+There are two primary methods to achieve high availability:
+
+<CardGroup cols={2}>
+  <Card title="Fixed Replica Count" icon="hashtag">
+    Set a static number of control plane replicas
+  </Card>
+  <Card title="Horizontal Autoscaling" icon="chart-line">
+    Dynamically scale based on resource utilization
+  </Card>
+</CardGroup>
+
+### Fixed Replica Count
+
+**Pros:**
+- Simple configuration and predictable behavior
+- Easy to understand and troubleshoot
+- Consistent resource allocation
+
+**Cons:**
+- No automatic scaling for traffic spikes
+- May over-provision resources during low usage
+- Requires manual adjustment for capacity changes
+
+### Horizontal Autoscaling
+
+**Pros:**
+- Adapts to varying load automatically
+- More efficient resource utilization
+- Handles unexpected traffic increases
+
+**Cons:**
+- Requires proper metrics configuration
+- More complex to monitor and tune
+- Needs careful threshold planning
+
+## Prerequisites
+
+- Kubernetes cluster (v1.23+)
+- Sail Operator installed
+- Understanding of your application's control plane load requirements
+
+## Fixed Replica Configuration
+
+Deploy Istio with multiple replicas and autoscaling disabled:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  values:
+    pilot:
+      autoscaleEnabled: false
+      replicaCount: 2
+```
+
+Apply the configuration:
+
+```bash
+kubectl create namespace istio-system
+kubectl apply -f istio-ha.yaml
+```
+
+### Verify Deployment
+
+Check that multiple istiod pods are running:
+
+```bash
+kubectl get pods -n istio-system -l app=istiod
+```
+
+Expected output:
+```
+NAME                      READY   STATUS    RESTARTS   AGE
+istiod-7c5947b8d7-88z7m   1/1     Running   0          14m
+istiod-7c5947b8d7-ssnmt   1/1     Running   0          54m
+```
+
+<Note>
+The `replicaCount` can be set to any value ≥ 2. For large production deployments, consider 3-5 replicas to balance availability and resource consumption.
+</Note>
+
+## Autoscaling Configuration
+
+Enable horizontal pod autoscaling based on CPU and memory utilization:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  values:
+    pilot:
+      autoscaleMin: 2
+      autoscaleMax: 5
+      cpu:
+        targetAverageUtilization: 80
+      memory:
+        targetAverageUtilization: 80
+```
+
+### Configuration Parameters
+
+<ParamField path="autoscaleMin" type="integer" default="1">
+  Minimum number of istiod replicas. Set to 2 or higher for HA.
+</ParamField>
+
+<ParamField path="autoscaleMax" type="integer" default="5">
+  Maximum number of replicas the autoscaler can create.
+</ParamField>
+
+<ParamField path="cpu.targetAverageUtilization" type="integer" default="80">
+  Target CPU utilization percentage. When exceeded, new replicas are created.
+</ParamField>
+
+<ParamField path="memory.targetAverageUtilization" type="integer" default="80">
+  Target memory utilization percentage. When exceeded, new replicas are created.
+</ParamField>
+
+### Verify Autoscaling
+
+Check the HorizontalPodAutoscaler resource:
+
+```bash
+kubectl get hpa -n istio-system
+```
+
+Example output:
+```
+NAME     REFERENCE            TARGETS                          MINPODS   MAXPODS   REPLICAS   AGE
+istiod   Deployment/istiod    45%/80% CPU, 60%/80% memory      2         5         2          5m
+```
+
+Monitor autoscaling events:
+
+```bash
+kubectl describe hpa istiod -n istio-system
+```
+
+<Tip>
+Monitor your control plane's resource usage over time to set appropriate `targetAverageUtilization` values. Start conservative (70-80%) and adjust based on observed behavior.
+</Tip>
+
+## Single-Node Cluster Considerations
+
+For single-node clusters (e.g., development environments), the default Pod Disruption Budget (PDB) can prevent HA deployments from functioning correctly.
+
+### Disable PDB for Single-Node Clusters
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  values:
+    pilot:
+      autoscaleEnabled: false
+      replicaCount: 2
+    global:
+      defaultPodDisruptionBudget:
+        enabled: false
+```
+
+<Warning>
+Disabling the PDB removes protection against disruptions. Only do this for single-node clusters or when you have other mechanisms to ensure availability.
+</Warning>
+
+### Why Disable PDB?
+
+The default PDB requires a minimum number of istiod replicas to remain available:
+
+- On multi-node clusters, replicas can spread across nodes
+- On single-node clusters, all replicas run on one node
+- During node operations (drain, reboot), the PDB blocks eviction
+- This can prevent maintenance or scaling operations
+
+## Production Best Practices
+
+### Resource Requests and Limits
+
+Always set resource requests and limits for predictable behavior:
+
+```yaml
+spec:
+  values:
+    pilot:
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2Gi
+        limits:
+          cpu: 2000m
+          memory: 4Gi
+```
+
+### Anti-Affinity Rules
+
+Ensure replicas spread across nodes and availability zones:
+
+```yaml
+spec:
+  values:
+    pilot:
+      podAntiAffinityLabelSelector:
+      - key: app
+        operator: In
+        values:
+        - istiod
+        topologyKey: kubernetes.io/hostname
+```
+
+For zone-level distribution:
+
+```yaml
+spec:
+  values:
+    pilot:
+      podAntiAffinityLabelSelector:
+      - key: app
+        operator: In
+        values:
+        - istiod
+        topologyKey: topology.kubernetes.io/zone
+```
+
+### Monitoring and Alerts
+
+Set up monitoring for control plane health:
+
+<Steps>
+  <Step title="Monitor Istiod Replica Count">
+    Alert when the number of ready replicas falls below the desired count:
+    
+    ```promql
+    kube_deployment_status_replicas_available{deployment="istiod"} < 2
+    ```
+  </Step>
+
+  <Step title="Track Control Plane Resource Usage">
+    Monitor CPU and memory to tune autoscaling thresholds:
+    
+    ```promql
+    rate(container_cpu_usage_seconds_total{pod=~"istiod-.*"}[5m])
+    container_memory_usage_bytes{pod=~"istiod-.*"}
+    ```
+  </Step>
+
+  <Step title="Watch for Webhook Failures">
+    Alert on injection or validation webhook errors:
+    
+    ```promql
+    rate(galley_validation_failed_total[5m]) > 0
+    ```
+  </Step>
+</Steps>
+
+### Rolling Update Strategy
+
+Configure rolling updates to maintain availability:
+
+```yaml
+spec:
+  values:
+    pilot:
+      rollingMaxSurge: 100%
+      rollingMaxUnavailable: 25%
+```
+
+This ensures:
+- New pods are created before old ones are terminated
+- At least 75% of replicas remain available during updates
+- Fast rollout with double the replicas temporarily
+
+## Testing HA Configuration
+
+### Simulate Pod Failure
+
+Delete an istiod pod and verify another takes over:
+
+```bash
+# Get current pods
+kubectl get pods -n istio-system -l app=istiod
+
+# Delete one pod
+kubectl delete pod -n istio-system -l app=istiod --field-selector=status.phase=Running --force --grace-period=0
+
+# Verify mesh continues operating
+kubectl get pods -n istio-system -l app=istiod
+istioctl proxy-status
+```
+
+### Load Testing
+
+Use load testing to verify autoscaling behavior:
+
+```bash
+# Generate load (example)
+kubectl run load-generator --image=busybox --restart=Never -- /bin/sh -c \
+  "while true; do wget -q -O- http://istiod.istio-system:15014/ready; done"
+
+# Watch autoscaling
+watch kubectl get hpa istiod -n istio-system
+```
+
+## Multi-Cluster HA
+
+For multi-cluster deployments, configure HA in each cluster:
+
+<Tabs>
+  <Tab title="Multi-Primary">
+    Each cluster runs an HA control plane:
+    
+    ```yaml
+    apiVersion: sailoperator.io/v1
+    kind: Istio
+    metadata:
+      name: default
+    spec:
+      namespace: istio-system
+      values:
+        global:
+          meshID: mesh1
+          multiCluster:
+            clusterName: cluster1
+        pilot:
+          autoscaleMin: 2
+          autoscaleMax: 5
+    ```
+  </Tab>
+  
+  <Tab title="Primary-Remote">
+    Only the primary cluster needs HA:
+    
+    ```yaml
+    # Primary cluster
+    apiVersion: sailoperator.io/v1
+    kind: Istio
+    metadata:
+      name: default
+    spec:
+      namespace: istio-system
+      values:
+        pilot:
+          autoscaleMin: 3
+          autoscaleMax: 10
+        global:
+          externalIstiod: true
+    ```
+  </Tab>
+</Tabs>
+
+<Info>
+In primary-remote topologies, the primary cluster's control plane is a single point of failure. Consider using multi-primary for true HA across clusters.
+</Info>
+
+## Troubleshooting
+
+### Pods Stuck in Pending
+
+Check for resource constraints:
+
+```bash
+kubectl describe pod -n istio-system -l app=istiod
+```
+
+Look for events indicating insufficient resources.
+
+### Autoscaler Not Scaling
+
+Verify metrics server is running:
+
+```bash
+kubectl get deployment metrics-server -n kube-system
+```
+
+Check HPA status:
+
+```bash
+kubectl get hpa istiod -n istio-system -o yaml
+```
+
+Look for `conditions` indicating metric availability.
+
+### Uneven Load Distribution
+
+Ensure service mesh clients are load-balanced across control plane replicas. Check endpoint distribution:
+
+```bash
+kubectl get endpoints istiod -n istio-system -o yaml
+```
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Multi-Cluster Deployment" icon="globe" href="/advanced/multi-cluster">
+    Extend HA across multiple clusters
+  </Card>
+  <Card title="Monitoring and Observability" icon="chart-bar" href="/operations/monitoring">
+    Set up monitoring for your control plane
+  </Card>
+  <Card title="Kubernetes HPA" icon="book" href="https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/">
+    Learn more about Horizontal Pod Autoscaler
+  </Card>
+  <Card title="Istio Performance" icon="gauge" href="https://istio.io/latest/docs/ops/deployment/performance-and-scalability/">
+    Istio performance and scalability guide
+  </Card>
+</CardGroup>

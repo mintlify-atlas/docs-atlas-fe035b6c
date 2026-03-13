@@ -1,0 +1,507 @@
+---
+title: Values
+description: Helm values configuration for Istio control plane
+icon: sliders
+---
+
+The `Values` type defines the complete Helm values structure for configuring the Istio control plane. It is used in the `Istio` and `IstioRevision` custom resources to customize the installation.
+
+## Overview
+
+The Values configuration allows you to customize every aspect of the Istio control plane deployment, including:
+
+- Global settings (image repositories, logging, networking)
+- Pilot (istiod) configuration
+- Gateway configuration
+- Sidecar injection settings
+- Telemetry configuration
+- CNI integration
+
+## Configuration Fields
+
+### Global Configuration
+
+<ParamField path="global" type="GlobalConfig">
+  Global configuration for all Istio components.
+  
+  <Expandable title="Global Configuration Fields">
+    <ParamField path="global.hub" type="string">
+      Docker hub for Istio images. Defaults to `docker.io/istio`.
+      
+      ```yaml
+      global:
+        hub: gcr.io/my-project/istio
+      ```
+    </ParamField>
+    
+    <ParamField path="global.tag" type="string">
+      Tag for Istio docker images. Typically matches the Istio version.
+      
+      ```yaml
+      global:
+        tag: 1.29.1
+      ```
+    </ParamField>
+    
+    <ParamField path="global.variant" type="string">
+      Image variant to use. Valid values: `"debug"`, `"distroless"`. If unset, uses the default for the version.
+      
+      ```yaml
+      global:
+        variant: distroless
+      ```
+    </ParamField>
+    
+    <ParamField path="global.imagePullPolicy" type="PullPolicy">
+      Image pull policy for Istio images. Valid values: `Always`, `Never`, `IfNotPresent`.
+      Defaults to `Always` if `:latest` tag is specified, or `IfNotPresent` otherwise.
+      
+      ```yaml
+      global:
+        imagePullPolicy: IfNotPresent
+      ```
+    </ParamField>
+    
+    <ParamField path="global.imagePullSecrets" type="[]string">
+      ImagePullSecrets for the control plane ServiceAccount. List of secret names in the same namespace.
+      Required for private docker registries.
+      
+      ```yaml
+      global:
+        imagePullSecrets:
+          - my-registry-secret
+      ```
+    </ParamField>
+    
+    <ParamField path="global.istioNamespace" type="string">
+      Namespace for the Istio control plane components. Defaults to `istio-system`.
+      
+      ```yaml
+      global:
+        istioNamespace: istio-system
+      ```
+    </ParamField>
+    
+    <ParamField path="global.network" type="string">
+      Network defines which network this cluster belongs to. Used in multi-cluster deployments.
+      
+      ```yaml
+      global:
+        network: network1
+      ```
+    </ParamField>
+    
+    <ParamField path="global.multiCluster" type="MultiClusterConfig">
+      Configuration for multi-cluster Istio mesh.
+      
+      ```yaml
+      global:
+        multiCluster:
+          enabled: true
+          clusterName: cluster1
+      ```
+    </ParamField>
+    
+    <ParamField path="global.meshID" type="string">
+      Unique identifier for the mesh. Required to be unique when meshes interact (telemetry aggregation, federation, etc.).
+      If not specified, defaults to the Trust Domain value.
+      
+      ```yaml
+      global:
+        meshID: mesh1
+      ```
+    </ParamField>
+    
+    <ParamField path="global.logging" type="GlobalLoggingConfig">
+      Global logging level settings for Istio control plane components.
+      
+      ```yaml
+      global:
+        logging:
+          level: "default:info,ads:debug"
+      ```
+    </ParamField>
+    
+    <ParamField path="global.logAsJson" type="bool">
+      Output logs in JSON format by adding `--log_as_json` argument to each container.
+      
+      ```yaml
+      global:
+        logAsJson: true
+      ```
+    </ParamField>
+    
+    <ParamField path="global.proxy" type="ProxyConfig">
+      Configuration for Envoy sidecar proxies.
+      
+      ```yaml
+      global:
+        proxy:
+          logLevel: warning
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+      ```
+    </ParamField>
+    
+    <ParamField path="global.defaultPodDisruptionBudget" type="DefaultPodDisruptionBudgetConfig">
+      Default PodDisruptionBudget configuration for control plane components.
+      
+      ```yaml
+      global:
+        defaultPodDisruptionBudget:
+          enabled: true
+      ```
+    </ParamField>
+    
+    <ParamField path="global.platform" type="string">
+      Platform where Istio is deployed. Valid values: `"openshift"`, `"gcp"`. Empty means vanilla Kubernetes.
+      
+      ```yaml
+      global:
+        platform: openshift
+      ```
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Pilot Configuration
+
+<ParamField path="pilot" type="PilotConfig">
+  Configuration for the Pilot component (istiod).
+  
+  <Expandable title="Pilot Configuration Fields">
+    <ParamField path="pilot.enabled" type="bool">
+      Controls whether Pilot is enabled. Defaults to `true`.
+      
+      ```yaml
+      pilot:
+        enabled: true
+      ```
+    </ParamField>
+    
+    <ParamField path="pilot.autoscaleEnabled" type="bool">
+      Enable HorizontalPodAutoscaler for Pilot.
+      
+      ```yaml
+      pilot:
+        autoscaleEnabled: true
+        autoscaleMin: 1
+        autoscaleMax: 5
+      ```
+    </ParamField>
+    
+    <ParamField path="pilot.autoscaleMin" type="uint32">
+      Minimum number of replicas in the HorizontalPodAutoscaler.
+    </ParamField>
+    
+    <ParamField path="pilot.autoscaleMax" type="uint32">
+      Maximum number of replicas in the HorizontalPodAutoscaler.
+    </ParamField>
+    
+    <ParamField path="pilot.image" type="string">
+      Image name for Pilot. Can be set to image name if hub is set, or full hub:name string.
+      
+      ```yaml
+      pilot:
+        image: pilot
+      ```
+    </ParamField>
+    
+    <ParamField path="pilot.traceSampling" type="float64">
+      Trace sampling fraction (0.0 to 1.0). Higher values provide more accuracy but add CPU overhead.
+      
+      ```yaml
+      pilot:
+        traceSampling: 1.0
+      ```
+    </ParamField>
+    
+    <ParamField path="pilot.env" type="map[string]string">
+      Environment variables passed to the Pilot container.
+      
+      ```yaml
+      pilot:
+        env:
+          PILOT_ENABLE_ANALYSIS: "true"
+      ```
+    </ParamField>
+    
+    <ParamField path="pilot.affinity" type="Affinity">
+      Kubernetes affinity settings for Pilot pods.
+      
+      ```yaml
+      pilot:
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+              - matchExpressions:
+                - key: kubernetes.io/arch
+                  operator: In
+                  values:
+                  - amd64
+      ```
+    </ParamField>
+    
+    <ParamField path="pilot.podLabels" type="map[string]string">
+      Labels added to Pilot pods.
+      
+      ```yaml
+      pilot:
+        podLabels:
+          app: istiod
+          version: v1
+      ```
+    </ParamField>
+    
+    <ParamField path="pilot.serviceAnnotations" type="map[string]string">
+      Annotations for the Pilot service.
+      
+      ```yaml
+      pilot:
+        serviceAnnotations:
+          prometheus.io/scrape: "true"
+      ```
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Sidecar Injector Configuration
+
+<ParamField path="sidecarInjectorWebhook" type="SidecarInjectorConfig">
+  Configuration for the sidecar injector webhook.
+  
+  <Expandable title="Sidecar Injector Fields">
+    <ParamField path="sidecarInjectorWebhook.enableNamespacesByDefault" type="bool">
+      Enable sidecar auto-injection in namespaces by default. When `false`, namespaces must be explicitly labeled with `istio-injection=enabled`.
+      
+      ```yaml
+      sidecarInjectorWebhook:
+        enableNamespacesByDefault: false
+      ```
+    </ParamField>
+    
+    <ParamField path="sidecarInjectorWebhook.rewriteAppHTTPProbe" type="bool">
+      Rewrite PodSpec for liveness health check to redirect requests to sidecar. Makes liveness checks work with mTLS enabled.
+      
+      ```yaml
+      sidecarInjectorWebhook:
+        rewriteAppHTTPProbe: true
+      ```
+    </ParamField>
+    
+    <ParamField path="sidecarInjectorWebhook.neverInjectSelector" type="[]LabelSelector">
+      Label selectors to prevent sidecar injection. Pods with matching labels will not be injected.
+      
+      ```yaml
+      sidecarInjectorWebhook:
+        neverInjectSelector:
+        - matchLabels:
+            sidecar.istio.io/inject: "false"
+      ```
+    </ParamField>
+    
+    <ParamField path="sidecarInjectorWebhook.alwaysInjectSelector" type="[]LabelSelector">
+      Label selectors to always inject sidecar, regardless of namespace label.
+      
+      ```yaml
+      sidecarInjectorWebhook:
+        alwaysInjectSelector:
+        - matchLabels:
+            sidecar.istio.io/inject: "true"
+      ```
+    </ParamField>
+    
+    <ParamField path="sidecarInjectorWebhook.templates" type="map[string]string">
+      Custom injection templates. Define custom templates that can be referenced via pod annotations.
+      
+      ```yaml
+      sidecarInjectorWebhook:
+        templates:
+          custom: |
+            metadata:
+              labels:
+                custom-template: enabled
+      ```
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Telemetry Configuration
+
+<ParamField path="telemetry" type="TelemetryConfig">
+  Telemetry configuration for the control plane.
+  
+  <Expandable title="Telemetry Fields">
+    <ParamField path="telemetry.enabled" type="bool">
+      Enable telemetry export.
+      
+      ```yaml
+      telemetry:
+        enabled: true
+      ```
+    </ParamField>
+    
+    <ParamField path="telemetry.v2" type="TelemetryV2Config">
+      Telemetry v2 configuration.
+      
+      ```yaml
+      telemetry:
+        v2:
+          enabled: true
+          prometheus:
+            enabled: true
+      ```
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Mesh Configuration
+
+<ParamField path="meshConfig" type="MeshConfig">
+  Mesh-wide configuration settings. See [Istio MeshConfig documentation](https://istio.io/latest/docs/reference/config/istio.mesh.v1alpha1/) for details.
+  
+  ```yaml
+  meshConfig:
+    accessLogFile: /dev/stdout
+    enableTracing: true
+    defaultConfig:
+      proxyMetadata:
+        ISTIO_META_DNS_CAPTURE: "true"
+  ```
+</ParamField>
+
+### Other Configuration
+
+<ParamField path="revision" type="string">
+  Identifies the revision this installation is associated with. Used for canary upgrades.
+  
+  ```yaml
+  revision: canary
+  ```
+</ParamField>
+
+<ParamField path="profile" type="string">
+  Installation configuration profile. Valid values: `ambient`, `default`, `demo`, `empty`, `openshift`, `openshift-ambient`, `preview`, `remote`, `stable`.
+  
+  ```yaml
+  profile: default
+  ```
+</ParamField>
+
+<ParamField path="compatibilityVersion" type="string">
+  Compatibility version to use. Control plane will be configured with defaults from the specified version.
+  
+  ```yaml
+  compatibilityVersion: "1.28"
+  ```
+</ParamField>
+
+## Common Configuration Examples
+
+### Basic Production Configuration
+
+```yaml
+values:
+  global:
+    hub: docker.io/istio
+    tag: 1.29.1
+    imagePullPolicy: IfNotPresent
+    logAsJson: true
+    defaultPodDisruptionBudget:
+      enabled: true
+  pilot:
+    autoscaleEnabled: true
+    autoscaleMin: 2
+    autoscaleMax: 5
+    traceSampling: 1.0
+  sidecarInjectorWebhook:
+    enableNamespacesByDefault: false
+    rewriteAppHTTPProbe: true
+```
+
+### Custom Image Registry
+
+```yaml
+values:
+  global:
+    hub: my-registry.example.com/istio
+    imagePullSecrets:
+      - registry-credentials
+    imagePullPolicy: IfNotPresent
+```
+
+### Multi-Cluster Configuration
+
+```yaml
+values:
+  global:
+    meshID: mesh1
+    multiCluster:
+      enabled: true
+      clusterName: cluster1
+    network: network1
+```
+
+### High Availability Configuration
+
+```yaml
+values:
+  pilot:
+    autoscaleEnabled: true
+    autoscaleMin: 3
+    autoscaleMax: 10
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app: istiod
+          topologyKey: kubernetes.io/hostname
+```
+
+### OpenShift Configuration
+
+```yaml
+values:
+  global:
+    platform: openshift
+  pilot:
+    env:
+      PILOT_ENABLE_PROTOCOL_SNIFFING_FOR_OUTBOUND: "false"
+      PILOT_ENABLE_PROTOCOL_SNIFFING_FOR_INBOUND: "false"
+```
+
+### Debug Configuration
+
+```yaml
+values:
+  global:
+    variant: debug
+    logging:
+      level: "default:debug"
+    proxy:
+      logLevel: debug
+      componentLogLevel: "misc:error"
+  pilot:
+    traceSampling: 100.0
+```
+
+## References
+
+<CardGroup cols={2}>
+  <Card title="Istio Helm Values" icon="book" href="https://istio.io/latest/docs/reference/config/istio.operator.v1alpha1/">
+    Official Istio Helm values reference
+  </Card>
+  <Card title="MeshConfig Reference" icon="cube" href="https://istio.io/latest/docs/reference/config/istio.mesh.v1alpha1/">
+    Istio MeshConfig API reference
+  </Card>
+  <Card title="Installation Profiles" icon="layer-group" href="https://istio.io/latest/docs/setup/additional-setup/config-profiles/">
+    Istio installation configuration profiles
+  </Card>
+  <Card title="Istio Resource" icon="file-code" href="/api/istio">
+    Istio custom resource documentation
+  </Card>
+</CardGroup>

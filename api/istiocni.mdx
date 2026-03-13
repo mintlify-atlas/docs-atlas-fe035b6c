@@ -1,0 +1,400 @@
+---
+title: IstioCNI
+description: API reference for the IstioCNI custom resource
+---
+
+## Overview
+
+The `IstioCNI` resource represents a deployment of the Istio CNI plugin. The Istio CNI plugin is responsible for setting up network routing rules for pods in the mesh.
+
+The CNI plugin is required in the following scenarios:
+- **OpenShift clusters:** Required for all Istio installations on OpenShift
+- **Ambient mesh mode:** Required for Istio Ambient mesh deployments
+- **Security-restricted environments:** When pods run without `NET_ADMIN` and `NET_RAW` capabilities
+
+**Important:** Only one IstioCNI resource can exist in the cluster, and it must be named `default`.
+
+**API Group:** `sailoperator.io/v1`
+
+**Kind:** `IstioCNI`
+
+**Scope:** Cluster
+
+## Spec Fields
+
+The `spec` field defines the desired state of the Istio CNI installation.
+
+<ParamField path="version" type="string" required>
+  The version of Istio CNI to install. Should match the Istio control plane version.
+  
+  **Default:** `v1.29.1`
+  
+  **Validation:** Must be one of the supported versions (e.g., v1.29.1, v1.29.0, v1.28.5, v1.28.4, v1.27.8, etc.)
+  
+  **Example:** `v1.29.1`
+</ParamField>
+
+<ParamField path="namespace" type="string" required>
+  The namespace to which the Istio CNI component should be installed.
+  
+  **Default:** `istio-cni`
+  
+  **Validation:** This field is immutable after creation
+  
+  **Example:** `istio-cni`
+</ParamField>
+
+<ParamField path="profile" type="string">
+  The built-in installation configuration profile to use. The 'default' profile is always applied. On OpenShift, the 'openshift' profile is also applied on top of 'default'.
+  
+  **Validation:** Must be one of: `ambient`, `default`, `demo`, `empty`, `external`, `openshift`, `openshift-ambient`, `preview`, `remote`, `stable`
+  
+  **Example:** `default`
+</ParamField>
+
+<ParamField path="values" type="object">
+  Defines the values to be passed to the Helm charts when installing Istio CNI. This allows you to customize the CNI installation.
+  
+  <Expandable title="Common values fields">
+    <ParamField path="values.cni" type="object">
+      Configuration for the Istio CNI plugin.
+      
+      See the [Istio CNI documentation](https://istio.io/latest/docs/setup/additional-setup/cni/) for available options.
+    </ParamField>
+    
+    <ParamField path="values.global" type="object">
+      Global configuration applicable to the Istio CNI component.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Status Fields
+
+The `status` field reports the observed state of the IstioCNI resource.
+
+<ResponseField name="observedGeneration" type="integer">
+  The most recent generation observed for this IstioCNI object. It corresponds to the object's generation, which is updated on mutation by the API Server.
+</ResponseField>
+
+<ResponseField name="conditions" type="array">
+  Represents the latest available observations of the object's current state.
+  
+  <Expandable title="condition fields">
+    <ResponseField name="type" type="string">
+      The type of this condition. Possible values:
+      - `Reconciled`: Signifies whether the controller has successfully reconciled the resources
+      - `Ready`: Signifies whether the istio-cni-node DaemonSet is ready
+    </ResponseField>
+    
+    <ResponseField name="status" type="string">
+      The status of this condition. Can be `True`, `False`, or `Unknown`.
+    </ResponseField>
+    
+    <ResponseField name="reason" type="string">
+      A unique, single-word, CamelCase reason for the condition's last transition.
+      
+      Possible reasons:
+      - `Healthy`: The CNI plugin is fully reconciled and all components are ready
+      - `ReconcileError`: The reconciliation has failed, but will be retried
+      - `DaemonSetNotReady`: The istio-cni-node DaemonSet is not ready
+      - `ReadinessCheckFailed`: The DaemonSet readiness status could not be ascertained
+    </ResponseField>
+    
+    <ResponseField name="message" type="string">
+      Human-readable message indicating details about the last transition.
+    </ResponseField>
+    
+    <ResponseField name="lastTransitionTime" type="string">
+      Last time the condition transitioned from one status to another.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="state" type="string">
+  Reports the current state of the object. This is a summary of the most relevant condition reason.
+</ResponseField>
+
+## Examples
+
+### Basic Installation
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+```
+
+### Ambient Mode Installation
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+```
+
+### Complete Ambient Mesh Setup
+
+Deploy all required components for Ambient mesh:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+---
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+---
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  updateStrategy:
+    type: InPlace
+  values:
+    pilot:
+      trustedZtunnelNamespace: "ztunnel"
+```
+
+### OpenShift Installation
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: openshift
+  namespace: istio-cni
+```
+
+## Common Usage Patterns
+
+### Deploying IstioCNI
+
+Deploy the CNI plugin before installing Istio:
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+EOF
+```
+
+Wait for the CNI to be ready:
+
+```bash
+kubectl wait --for=condition=Ready istiocni/default --timeout=300s
+```
+
+Then deploy Istio:
+
+```bash
+kubectl apply -f istio.yaml
+```
+
+### Checking CNI Status
+
+View the status of the CNI installation:
+
+```bash
+kubectl get istiocni default
+```
+
+Example output:
+```
+NAME      NAMESPACE    PROFILE   READY   STATUS    VERSION   AGE
+default   istio-cni    default   True    Healthy   v1.29.1   5m
+```
+
+Get detailed status:
+
+```bash
+kubectl get istiocni default -o jsonpath='{.status}' | jq
+```
+
+### Verifying CNI DaemonSet
+
+The IstioCNI resource creates a DaemonSet named `istio-cni-node`. Verify it's running:
+
+```bash
+kubectl get daemonset -n istio-cni istio-cni-node
+```
+
+Check that CNI pods are running on all nodes:
+
+```bash
+kubectl get pods -n istio-cni
+```
+
+### Upgrading IstioCNI
+
+When upgrading Istio, upgrade IstioCNI first:
+
+```bash
+# Upgrade CNI
+kubectl patch istiocni default --type merge -p '{"spec":{"version":"v1.29.1"}}'
+
+# Wait for CNI to be ready
+kubectl wait --for=condition=Ready istiocni/default --timeout=300s
+
+# Then upgrade Istio
+kubectl patch istio default --type merge -p '{"spec":{"version":"v1.29.1"}}'
+```
+
+### Viewing CNI Logs
+
+View logs from the CNI pods:
+
+```bash
+kubectl logs -n istio-cni -l k8s-app=istio-cni-node
+```
+
+Follow logs in real-time:
+
+```bash
+kubectl logs -n istio-cni -l k8s-app=istio-cni-node -f
+```
+
+## Troubleshooting
+
+### CNI Not Ready
+
+If the IstioCNI resource is not becoming ready:
+
+1. Check the CNI DaemonSet status:
+```bash
+kubectl get daemonset -n istio-cni istio-cni-node
+```
+
+2. Check CNI pod logs:
+```bash
+kubectl logs -n istio-cni -l k8s-app=istio-cni-node
+```
+
+3. Check for events:
+```bash
+kubectl describe istiocni default
+```
+
+### CNI Pods Not Starting
+
+Common issues:
+
+- **Permission errors:** Ensure the CNI namespace has the correct security context constraints (OpenShift)
+- **Node compatibility:** Verify the CNI plugin is compatible with your Kubernetes version
+- **Resource constraints:** Check if nodes have sufficient resources
+
+### Istio Not Detecting CNI
+
+If Istio doesn't detect the CNI plugin:
+
+1. Verify IstioCNI is ready:
+```bash
+kubectl get istiocni default -o jsonpath='{.status.state}'
+```
+
+2. Check that the Istio resource references the correct CNI namespace:
+```bash
+kubectl get istio default -o yaml | grep -A 5 cni
+```
+
+3. Verify the CNI DaemonSet is running on all nodes:
+```bash
+kubectl get ds -n istio-cni istio-cni-node
+```
+
+### Sidecar Injection Failures
+
+If pods fail to start after enabling sidecar injection:
+
+1. Check CNI installation logs:
+```bash
+kubectl logs -n istio-cni -l k8s-app=istio-cni-node --tail=100
+```
+
+2. Verify CNI configuration:
+```bash
+kubectl get configmap -n istio-cni istio-cni-config -o yaml
+```
+
+3. Check pod events:
+```bash
+kubectl describe pod <pod-name> -n <namespace>
+```
+
+## Validation Rules
+
+### Name Validation
+
+The IstioCNI resource must be named `default`. This is enforced by a validation rule:
+
+```yaml
+# Valid
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default  # Must be "default"
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+```
+
+### Namespace Immutability
+
+The `spec.namespace` field cannot be changed after creation. To change the namespace, you must delete and recreate the resource.
+
+## Dependencies
+
+### Required By
+
+The following resources depend on IstioCNI:
+
+- **Istio** (on OpenShift or when using Ambient mode)
+- **IstioRevision** (on OpenShift or when using Ambient mode)
+
+The Istio controller checks the `DependenciesHealthy` condition, which includes the health of the IstioCNI resource.
+
+### Required For
+
+- **OpenShift:** IstioCNI is required for all Istio installations
+- **Ambient Mesh:** IstioCNI is required along with ZTunnel
+- **Security-restricted environments:** When pods cannot have `NET_ADMIN` capabilities
+
+## Related Resources
+
+<Card title="Istio" icon="network-wired" href="/api/istio">
+  Deploy Istio control plane with CNI integration
+</Card>
+
+<Card title="ZTunnel" icon="layer-group" href="/api/ztunnel">
+  Deploy ZTunnel for Ambient mesh mode
+</Card>

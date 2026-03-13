@@ -1,0 +1,319 @@
+---
+title: Istio
+description: API reference for the Istio custom resource
+---
+
+## Overview
+
+The `Istio` resource represents an Istio Service Mesh deployment consisting of one or more control plane instances. It is the primary resource used to deploy and manage Istio in a Kubernetes cluster.
+
+When you create an `Istio` resource, the Sail Operator automatically creates and manages underlying `IstioRevision` objects, which represent specific control plane deployments. This abstraction allows for both in-place upgrades and revision-based canary upgrades.
+
+**API Group:** `sailoperator.io/v1`
+
+**Kind:** `Istio`
+
+**Scope:** Cluster
+
+## Spec Fields
+
+The `spec` field defines the desired state of the Istio control plane.
+
+<ParamField path="version" type="string" required>
+  The version of Istio to install. Must be one of the supported versions.
+  
+  **Default:** `v1.29.1`
+  
+  **Validation:** Must be an enum value from the supported versions list (e.g., v1.29.1, v1.29.0, v1.28.5, v1.28.4, v1.27.8, etc.)
+  
+  **Example:** `v1.29.1`
+</ParamField>
+
+<ParamField path="namespace" type="string" required>
+  The namespace to which the Istio components should be installed.
+  
+  **Default:** `istio-system`
+  
+  **Validation:** This field is immutable after creation
+  
+  **Example:** `istio-system`
+</ParamField>
+
+<ParamField path="profile" type="string">
+  The built-in installation configuration profile to use. The 'default' profile is always applied. On OpenShift, the 'openshift' profile is also applied on top of 'default'.
+  
+  **Validation:** Must be one of: `ambient`, `default`, `demo`, `empty`, `external`, `openshift`, `openshift-ambient`, `preview`, `remote`, `stable`
+  
+  **Example:** `default`
+</ParamField>
+
+<ParamField path="updateStrategy" type="object">
+  Defines the update strategy to use when the version in the Istio CR is updated.
+  
+  **Default:** `{type: "InPlace"}`
+  
+  <Expandable title="updateStrategy fields">
+    <ParamField path="updateStrategy.type" type="string">
+      Type of strategy to use. Can be "InPlace" or "RevisionBased".
+      
+      - **InPlace:** The existing Istio control plane is updated in-place. Workloads don't need to be moved from one control plane instance to another.
+      - **RevisionBased:** A new Istio control plane instance is created for every change to the Istio.spec.version field. The old control plane remains in place until all workloads have been moved to the new control plane instance.
+      
+      **Default:** `InPlace`
+      
+      **Validation:** Must be either `InPlace` or `RevisionBased`
+    </ParamField>
+    
+    <ParamField path="updateStrategy.inactiveRevisionDeletionGracePeriodSeconds" type="integer">
+      Defines how many seconds the operator should wait before removing a non-active revision after all the workloads have stopped using it. You may want to set this value on the order of minutes.
+      
+      **Default:** `30`
+      
+      **Validation:** Minimum value is 0
+    </ParamField>
+    
+    <ParamField path="updateStrategy.updateWorkloads" type="boolean">
+      Defines whether the workloads should be moved from one control plane instance to another automatically.
+      
+      - If `true`, the operator moves the workloads from the old control plane instance to the new one after the new control plane is ready.
+      - If `false`, the user must move the workloads manually by updating the istio.io/rev labels on the namespace and/or the pods.
+      
+      **Default:** `false`
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="values" type="object">
+  Defines the values to be passed to the Helm charts when installing Istio. This allows you to customize the Istio installation with any valid Helm values.
+  
+  See the [Istio Helm Chart documentation](https://istio.io/latest/docs/setup/install/helm/) for available configuration options.
+</ParamField>
+
+## Status Fields
+
+The `status` field reports the observed state of the Istio resource.
+
+<ResponseField name="observedGeneration" type="integer">
+  The most recent generation observed for this Istio object. It corresponds to the object's generation, which is updated on mutation by the API Server.
+</ResponseField>
+
+<ResponseField name="conditions" type="array">
+  Represents the latest available observations of the object's current state.
+  
+  <Expandable title="condition fields">
+    <ResponseField name="type" type="string">
+      The type of this condition. Possible values:
+      - `Reconciled`: Signifies whether the controller has successfully reconciled the resources
+      - `Ready`: Signifies whether any Deployment, StatefulSet, etc. resources are Ready
+      - `DependenciesHealthy`: Signifies whether the dependencies required by this Istio are healthy
+    </ResponseField>
+    
+    <ResponseField name="status" type="string">
+      The status of this condition. Can be `True`, `False`, or `Unknown`.
+    </ResponseField>
+    
+    <ResponseField name="reason" type="string">
+      A unique, single-word, CamelCase reason for the condition's last transition.
+      
+      Possible reasons:
+      - `Healthy`: The control plane is fully reconciled and all components are ready
+      - `ReconcileError`: The reconciliation has failed, but will be retried
+      - `IstiodNotReady`: The control plane is reconciled, but istiod is not ready
+      - `IstioCNINotFound`: The IstioCNI resource is not found
+      - `IstioCNINotHealthy`: The IstioCNI resource is not healthy
+    </ResponseField>
+    
+    <ResponseField name="message" type="string">
+      Human-readable message indicating details about the last transition.
+    </ResponseField>
+    
+    <ResponseField name="lastTransitionTime" type="string">
+      Last time the condition transitioned from one status to another.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="state" type="string">
+  Reports the current state of the object. This is a summary of the most relevant condition reason.
+</ResponseField>
+
+<ResponseField name="activeRevisionName" type="string">
+  The name of the active revision.
+</ResponseField>
+
+<ResponseField name="revisions" type="object">
+  Reports information about the underlying IstioRevisions.
+  
+  <Expandable title="revisions fields">
+    <ResponseField name="total" type="integer">
+      Total number of IstioRevisions currently associated with this Istio.
+    </ResponseField>
+    
+    <ResponseField name="ready" type="integer">
+      Number of IstioRevisions that are Ready.
+    </ResponseField>
+    
+    <ResponseField name="inUse" type="integer">
+      Number of IstioRevisions that are currently in use.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Examples
+
+### Basic In-Place Installation
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+    inactiveRevisionDeletionGracePeriodSeconds: 30
+```
+
+### Revision-Based Installation with Automatic Workload Migration
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+    updateWorkloads: true
+    inactiveRevisionDeletionGracePeriodSeconds: 60
+```
+
+### Ambient Mode Installation
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  updateStrategy:
+    type: InPlace
+    inactiveRevisionDeletionGracePeriodSeconds: 30
+  values:
+    pilot:
+      trustedZtunnelNamespace: "ztunnel"
+```
+
+### Custom Configuration with Helm Values
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: default
+  values:
+    global:
+      proxy:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+    pilot:
+      autoscaleEnabled: true
+      autoscaleMin: 2
+      autoscaleMax: 5
+```
+
+## Common Usage Patterns
+
+### Deploying Istio
+
+To deploy Istio to your cluster, create an `Istio` resource:
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+EOF
+```
+
+### Upgrading Istio
+
+#### In-Place Upgrade
+
+For in-place upgrades, simply update the version field:
+
+```bash
+kubectl patch istio default --type merge -p '{"spec":{"version":"v1.29.1"}}'
+```
+
+#### Revision-Based Canary Upgrade
+
+For revision-based upgrades:
+
+1. Set the update strategy to `RevisionBased`
+2. Update the version field
+3. The operator will create a new revision
+4. Manually migrate workloads or set `updateWorkloads: true`
+
+### Checking Status
+
+```bash
+kubectl get istio default -o yaml
+```
+
+Check the `status.state` field for the current state and `status.revisions` for revision information.
+
+### Using with IstioCNI
+
+For OpenShift or Ambient mode, deploy IstioCNI first:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+---
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+```
+
+The Istio controller will wait for the IstioCNI resource to be ready before marking the Istio resource as healthy.
+
+## Related Resources
+
+<Card title="IstioRevision" icon="code-branch" href="/api/istiorevision">
+  Learn about IstioRevision resources that represent individual control plane deployments
+</Card>
+
+<Card title="IstioRevisionTag" icon="tag" href="/api/istiorevisiontag">
+  Manage stable revision tags for canary upgrades
+</Card>
+
+<Card title="IstioCNI" icon="network-wired" href="/api/istiocni">
+  Configure the Istio CNI plugin
+</Card>

@@ -1,0 +1,612 @@
+---
+title: Ambient Mode
+description: Deploy Istio with a sidecar-less architecture using ztunnel and optional waypoint proxies
+---
+
+Ambient mode represents a fundamental shift in Istio's architecture, eliminating the need for sidecar containers while still providing service mesh capabilities. It separates Layer 4 and Layer 7 processing into distinct components for improved resource efficiency.
+
+## Architecture Overview
+
+Ambient mode uses a two-layer architecture:
+
+1. **Layer 4 (L4) - ZTunnel**: A lightweight, shared node proxy that provides mTLS, L4 authorization, and basic telemetry
+2. **Layer 7 (L7) - Waypoint Proxies**: Optional Envoy-based proxies that handle advanced traffic management and policies
+
+<Info>
+Ambient mode was announced in September 2022 and reached stability in Istio 1.24. It's designed to reduce operational overhead while maintaining security and observability.
+</Info>
+
+## Key Components
+
+### ZTunnel (Zero-Trust Tunnel)
+
+The ztunnel is a lightweight node proxy that:
+- Runs as a DaemonSet on every node
+- Handles mTLS encryption between services
+- Enforces Layer 4 authorization policies
+- Collects TCP-level telemetry
+- Uses significantly less resources than sidecars
+
+### Waypoint Proxies
+
+Waypoint proxies are optional L7 processors that:
+- Handle HTTP routing and load balancing
+- Enforce Layer 7 authorization policies
+- Provide advanced traffic management (retries, timeouts, circuit breaking)
+- Can be deployed per namespace, service, or workload
+- Scale independently from applications
+
+## When to Use Ambient Mode
+
+Choose ambient mode when you:
+
+- Want to **reduce resource overhead** - No per-pod proxy containers
+- Need **simplified operations** - Fewer containers to manage
+- Require **gradual L7 adoption** - Start with L4, add L7 features selectively
+- Have **large-scale deployments** - Significant resource savings across many pods
+- Want **transparent mesh adoption** - No pod restarts when adding to mesh
+
+<Warning>
+Ambient mode requires Istio v1.24+ on Kubernetes or Istio v1.27+ on OpenShift. Ensure version compatibility before deployment.
+</Warning>
+
+## Installation
+
+### Prerequisites
+
+- **Kubernetes**: Version 1.21 or later
+- **OpenShift**: Version 4.14 or later (4.19+ includes Gateway API CRDs)
+- **Sail Operator**: Version 1.24+ installed
+- Cluster admin access
+
+### Step 1: Create Required Namespaces
+
+```bash
+kubectl create namespace istio-system
+kubectl label namespace istio-system istio-discovery=enabled
+
+kubectl create namespace istio-cni
+
+kubectl create namespace ztunnel
+kubectl label namespace ztunnel istio-discovery=enabled
+```
+
+<Note>
+The `istio-discovery=enabled` label is required when using discovery selectors to avoid TLS signing errors.
+</Note>
+
+### Step 2: Deploy Istio Control Plane with Ambient Profile
+
+```yaml istio-ambient.yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+  profile: ambient
+  values:
+    pilot:
+      trustedZtunnelNamespace: ztunnel
+    meshConfig:
+      discoverySelectors:
+        - matchLabels:
+            istio-discovery: enabled
+```
+
+Apply the configuration:
+
+```bash
+kubectl apply -f istio-ambient.yaml
+kubectl wait --for=condition=Ready istios/default --timeout=5m
+```
+
+Verify the control plane:
+
+```bash
+kubectl get istio -n istio-system
+```
+
+Expected output:
+
+```
+NAME      REVISIONS   READY   IN USE   ACTIVE REVISION   STATUS    VERSION    AGE
+default   1           1       0        default           Healthy   v1.29.1    23s
+```
+
+### Step 3: Deploy Istio CNI
+
+```yaml istiocni-sample.yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+```
+
+Apply the CNI configuration:
+
+```bash
+kubectl apply -f istiocni-sample.yaml
+kubectl wait --for=condition=Ready istiocnis/default --timeout=3m
+```
+
+### Step 4: Deploy ZTunnel
+
+```yaml ztunnel-sample.yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+```
+
+Apply the ZTunnel configuration:
+
+```bash
+kubectl apply -f ztunnel-sample.yaml
+kubectl wait --for=condition=Ready ztunnel/default --timeout=3m
+```
+
+Verify ztunnel deployment:
+
+```bash
+kubectl get ztunnel -n istio-system
+```
+
+Expected output:
+
+```
+NAME      READY   STATUS    VERSION    AGE
+default   True    Healthy   v1.29.1    16s
+```
+
+Check ztunnel pods are running on all nodes:
+
+```bash
+kubectl get pods -n ztunnel -o wide
+```
+
+### Step 5: Add Applications to the Ambient Mesh
+
+Label your application namespace:
+
+```bash
+kubectl label namespace <your-namespace> istio.io/dataplane-mode=ambient
+```
+
+<Info>
+No pod restarts required! Ambient mode adds pods to the mesh transparently without modifying pod specifications.
+</Info>
+
+Verify workloads are in the ambient mesh:
+
+```bash
+istioctl ztunnel-config workloads -n ztunnel | grep <your-namespace>
+```
+
+Expected output showing HBONE protocol:
+
+```
+bookinfo     productpage-v1-87d54dd59-wl7qf   10.129.0.48   node-name   None     HBONE
+bookinfo     reviews-v1-5fd6d4f8f8-66j45      10.129.0.45   node-name   None     HBONE
+bookinfo     ratings-v1-7c4bbf97db-rwkw5      10.129.0.42   node-name   None     HBONE
+```
+
+## Core Features
+
+Ambient mode provides several key capabilities:
+
+### Automatic mTLS Encryption
+
+All traffic between ambient mesh workloads is automatically encrypted with mutual TLS:
+
+```bash
+# View ztunnel logs to confirm mTLS
+kubectl -n ztunnel logs -l app=ztunnel | grep -E "inbound|outbound"
+```
+
+Sample output:
+
+```
+src.identity="spiffe://cluster.local/ns/bookinfo/sa/bookinfo-productpage" 
+dst.identity="spiffe://cluster.local/ns/bookinfo/sa/bookinfo-details" 
+direction="outbound"
+```
+
+### Layer 4 Authorization Policies
+
+Enforce L4 policies at the ztunnel level:
+
+```yaml l4-authz.yaml
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: ratings-l4-policy
+  namespace: bookinfo
+spec:
+  targetRefs:
+  - kind: Service
+    group: ""
+    name: ratings
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/bookinfo/sa/bookinfo-reviews
+```
+
+### TCP Telemetry
+
+Ztunnel automatically collects TCP-level metrics:
+
+```bash
+# View metrics from ztunnel
+kubectl exec -n ztunnel <ztunnel-pod> -- curl localhost:15020/stats/prometheus | grep istio
+```
+
+## Deploying Waypoint Proxies
+
+Waypoint proxies enable Layer 7 features in ambient mode.
+
+### Prerequisites for Waypoints
+
+Install Kubernetes Gateway API CRDs (if not already present):
+
+```bash
+kubectl get crd gateways.gateway.networking.k8s.io &> /dev/null || \
+  kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
+```
+
+### Creating a Waypoint Proxy
+
+```yaml waypoint-bookinfo.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  labels:
+    istio.io/waypoint-for: service
+  name: waypoint
+  namespace: bookinfo
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+  - name: mesh
+    port: 15008
+    protocol: HBONE
+```
+
+Apply the waypoint:
+
+```bash
+kubectl apply -f waypoint-bookinfo.yaml
+```
+
+### Enabling Waypoint for a Namespace
+
+```bash
+kubectl label namespace bookinfo istio.io/use-waypoint=waypoint
+```
+
+Verify waypoint is active:
+
+```bash
+kubectl get pods -n bookinfo -l gateway.networking.k8s.io/gateway-name=waypoint
+```
+
+<Info>
+Deploying a waypoint does NOT automatically route traffic through it. You must explicitly label namespaces, services, or pods.
+</Info>
+
+## Layer 7 Features
+
+Once waypoints are deployed and active, you can use Layer 7 capabilities:
+
+### Traffic Routing with HTTPRoute
+
+```yaml reviews-httproute.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: reviews
+  namespace: bookinfo
+spec:
+  parentRefs:
+  - group: ""
+    kind: Service
+    name: reviews
+    port: 9080
+  rules:
+  - backendRefs:
+    - name: reviews-v1
+      port: 9080
+      weight: 90
+    - name: reviews-v2
+      port: 9080
+      weight: 10
+```
+
+### Layer 7 Authorization Policies
+
+```yaml productpage-l7-authz.yaml
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: productpage-waypoint
+  namespace: bookinfo
+spec:
+  targetRefs:
+  - kind: Service
+    group: ""
+    name: productpage
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/bookinfo/sa/bookinfo-gateway
+    to:
+    - operation:
+        methods: ["GET", "POST"]
+        paths: ["/productpage*"]
+```
+
+<Note>
+L7 authorization policies must use `targetRefs` to attach to waypoints. Traditional `selector` syntax targets ztunnel enforcement.
+</Note>
+
+## Cross-Namespace Waypoints
+
+Waypoints can serve traffic from multiple namespaces:
+
+```yaml cross-namespace-waypoint.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: waypoint-shared
+  namespace: istio-system
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+  - name: mesh
+    port: 15008
+    protocol: HBONE
+    allowedRoutes:
+      namespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            shared-waypoint: "true"
+```
+
+Label namespaces to use the shared waypoint:
+
+```bash
+kubectl label namespace app1 shared-waypoint=true
+kubectl label namespace app1 istio.io/use-waypoint-namespace=istio-system
+kubectl label namespace app1 istio.io/use-waypoint=waypoint-shared
+```
+
+## Resource Consumption
+
+Ambient mode significantly reduces resource usage:
+
+### ZTunnel Overhead
+
+- **CPU**: ~10-50m per node (shared across all pods)
+- **Memory**: ~50-100 MB per node
+- **Network latency**: Minimal (~0.5ms)
+
+### Waypoint Overhead
+
+- **CPU**: ~50-100m per waypoint (idle)
+- **Memory**: ~128-256 MB per waypoint
+- **Scaling**: Independent from application pods
+
+<Info>
+Compared to sidecar mode, ambient can reduce resource consumption by 50-90% depending on pod density.
+</Info>
+
+## Update Strategy
+
+<Warning>
+Only InPlace update strategy is supported for ambient mode due to ZTunnel's cluster-wide singleton architecture.
+</Warning>
+
+Update all ambient components:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1  # Updated version
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+  profile: ambient
+---
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1  # Updated version
+  namespace: istio-cni
+  profile: ambient
+---
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1  # Updated version
+  namespace: ztunnel
+```
+
+Waypoint proxies automatically update when the control plane updates.
+
+## Troubleshooting
+
+### Workloads Not in Ambient Mesh
+
+Check namespace label:
+
+```bash
+kubectl get namespace <namespace> --show-labels | grep dataplane-mode
+```
+
+Verify ztunnel configuration:
+
+```bash
+istioctl ztunnel-config workloads -n ztunnel | grep <namespace>
+```
+
+### ZTunnel Connectivity Issues
+
+Check ztunnel logs:
+
+```bash
+kubectl logs -n ztunnel -l app=ztunnel --tail=100
+```
+
+Validate network sockets inside pods:
+
+```bash
+kubectl debug -it -n <namespace> <pod-name> --image quay.io/curl/curl -- netstat -tulpn
+```
+
+Expected output showing ztunnel listeners:
+
+```
+tcp        0      0 :::15008                :::*                    LISTEN      -
+tcp        0      0 :::15001                :::*                    LISTEN      -
+tcp        0      0 :::15006                :::*                    LISTEN      -
+```
+
+### Waypoint Policy Not Enforced
+
+Verify waypoint label:
+
+```bash
+kubectl get namespace <namespace> -o jsonpath='{.metadata.labels.istio\.io/use-waypoint}'
+```
+
+Check waypoint pod status:
+
+```bash
+kubectl get pods -n <namespace> -l gateway.networking.k8s.io/gateway-name=waypoint
+```
+
+Validate policy targetRefs:
+
+```bash
+kubectl get authorizationpolicy -n <namespace> -o yaml | grep -A 5 targetRefs
+```
+
+## Visualizing with Kiali
+
+Deploy Prometheus for metrics:
+
+```bash
+kubectl apply -n istio-system -f https://raw.githubusercontent.com/istio/istio/master/samples/addons/prometheus.yaml
+```
+
+Deploy Kiali on OpenShift:
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: kiali
+  namespace: openshift-operators
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: kiali
+  source: community-operators
+  sourceNamespace: openshift-marketplace
+EOF
+
+kubectl wait --for condition=established --timeout=60s crd "kialis.kiali.io"
+
+cat <<EOF | kubectl apply -f -
+apiVersion: kiali.io/v1alpha1
+kind: Kiali
+metadata:
+  name: kiali
+  namespace: istio-system
+EOF
+```
+
+Access the Kiali dashboard:
+
+```bash
+kubectl get route -n istio-system -l app.kubernetes.io/name=kiali -o jsonpath='https://{..spec.host}/'
+```
+
+## Cleanup
+
+### Remove Namespace from Ambient Mesh
+
+```bash
+kubectl label namespace <namespace> istio.io/dataplane-mode-
+```
+
+### Uninstall Ambient Components
+
+```bash
+# Remove ZTunnel
+kubectl delete ztunnel default
+
+# Remove Istio CNI
+kubectl delete istiocni default
+
+# Remove Istio control plane
+kubectl delete istio default -n istio-system
+```
+
+## Comparison with Other Modes
+
+<CardGroup cols={2}>
+  <Card title="Sidecar Mode" icon="box" href="/deployment/sidecar-mode">
+    Traditional per-pod proxy deployment
+  </Card>
+  <Card title="Waypoint Proxies" icon="traffic-light" href="/deployment/waypoint-proxies">
+    Learn more about Layer 7 processing
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Waypoint Configuration" icon="gear" href="/deployment/waypoint-proxies">
+    Deploy and configure waypoint proxies
+  </Card>
+  <Card title="Traffic Management" icon="route" href="https://istio.io/latest/docs/tasks/traffic-management/">
+    Use HTTPRoute for L7 routing
+  </Card>
+  <Card title="Security Policies" icon="shield-halved" href="https://istio.io/latest/docs/tasks/security/">
+    Configure L4 and L7 authorization
+  </Card>
+  <Card title="Migrate from Sidecar" icon="right-left" href="/deployment/coexistence">
+    Migration guide for existing deployments
+  </Card>
+</CardGroup>
+
+## Additional Resources
+
+- [Istio Ambient Mode Documentation](https://istio.io/latest/docs/ambient/)
+- [ZTunnel Troubleshooting](https://istio.io/latest/docs/ambient/usage/troubleshoot-ztunnel/)
+- [Kiali Ambient Features](https://kiali.io/docs/features/ambient/)

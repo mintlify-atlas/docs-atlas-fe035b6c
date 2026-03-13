@@ -1,0 +1,231 @@
+---
+title: Introduction to Sail Operator
+description: Learn about the Sail Operator and how it manages Istio service mesh deployments on Kubernetes
+---
+
+The Sail Operator is a Kubernetes operator that manages the lifecycle of your [Istio](https://istio.io) control plane. It provides custom resources for you to deploy and manage your control plane components declaratively, making it simple to install, configure, and upgrade Istio on Kubernetes and OpenShift platforms.
+
+## What is Sail Operator?
+
+Sail Operator is the community upstream project for Red Hat OpenShift Service Mesh 3. It follows the Kubernetes [Operator pattern](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/) and uses controllers to synchronize your desired Istio configuration with the actual state running in your cluster.
+
+Instead of creating a new configuration schema, Sail Operator APIs are built around Istio's Helm chart APIs. All installation and configuration options that are exposed by Istio's Helm charts are available through the Sail Operator CRDs' `values` fields.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Declarative Management" icon="file-code">
+    Manage Istio control planes through Kubernetes custom resources with all Helm configuration options available
+  </Card>
+  
+  <Card title="Multi-Version Support" icon="layer-group">
+    Install and manage multiple Istio versions simultaneously with support for n-2 releases
+  </Card>
+  
+  <Card title="Flexible Updates" icon="arrows-rotate">
+    Choose between InPlace updates for quick upgrades or RevisionBased for canary deployments
+  </Card>
+  
+  <Card title="Ambient Mode" icon="network-wired">
+    Full support for Istio's Ambient mesh with separate management of CNI and ZTunnel components
+  </Card>
+</CardGroup>
+
+## Core Custom Resources
+
+Sail Operator provides several custom resources to manage different aspects of your service mesh:
+
+### Istio Resource
+
+The primary resource for managing your Istio control plane:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+  values:
+    pilot:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 1024Mi
+```
+
+### IstioRevision Resource
+
+Represents a specific revision of the control plane (typically managed automatically by the operator):
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioRevision
+metadata:
+  name: example
+spec:
+  namespace: istio-system
+status:
+  state: Healthy
+```
+
+### IstioCNI Resource
+
+Manages the Istio CNI plugin lifecycle (required for OpenShift and Ambient mode):
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+```
+
+### ZTunnel Resource (Ambient Mode)
+
+Manages the L4 node proxy for Ambient mesh:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+```
+
+## Comparison to Other Installation Methods
+
+### Sail Operator vs. istioctl
+
+| Feature | Sail Operator | istioctl |
+|---------|--------------|----------|
+| **Management Style** | Declarative (GitOps-friendly) | Imperative CLI commands |
+| **Kubernetes Native** | Yes, uses CRDs | No, external tool |
+| **Multi-version Support** | Built-in with operator | Manual version management |
+| **Automated Upgrades** | Yes, through resource updates | Manual execution required |
+| **OpenShift Integration** | First-class support | Requires additional config |
+
+### Sail Operator vs. Istio Helm Charts
+
+| Feature | Sail Operator | Helm Charts |
+|---------|--------------|-------------|
+| **Configuration** | Kubernetes CRDs | Helm values files |
+| **Lifecycle Management** | Continuous reconciliation | One-time install/upgrade |
+| **Canary Upgrades** | Built-in RevisionBased strategy | Manual process |
+| **Multi-version** | Native support | Complex manual setup |
+| **Status Reporting** | Rich Kubernetes status | Limited |
+
+### Sail Operator vs. Istio In-Cluster Operator (Deprecated)
+
+Sail Operator is the successor to the deprecated Istio in-cluster operator:
+
+<Info>
+  The Istio in-cluster operator (IstioOperator API) was deprecated in 2024. Sail Operator provides a migration path with improved architecture and features.
+</Info>
+
+**Key Improvements:**
+- Operator version decoupled from Istio version
+- Supports multiple Istio versions from single operator
+- Better alignment with Istio's Helm-based configuration
+- Enhanced OpenShift integration
+- Improved status reporting and observability
+
+## Why Choose Sail Operator?
+
+<CardGroup cols={1}>
+  <Card title="For Platform Teams">
+    - Simplified multi-tenant mesh management
+    - Consistent deployment across environments
+    - GitOps-ready declarative configuration
+    - Built-in upgrade strategies
+  </Card>
+  
+  <Card title="For OpenShift Users">
+    - Native OpenShift integration
+    - Available through OperatorHub
+    - Follows OpenShift best practices
+    - Security Context Constraints (SCC) handling
+  </Card>
+  
+  <Card title="For Production Environments">
+    - Canary upgrades with RevisionBased strategy
+    - InUse detection prevents accidental deletion
+    - Rich status reporting
+    - Multi-cluster support
+  </Card>
+</CardGroup>
+
+## Deployment Modes
+
+Sail Operator supports both traditional sidecar and modern ambient mesh modes:
+
+### Sidecar Mode
+
+Traditional Istio deployment with sidecar proxies injected into each pod:
+
+- **Resources needed**: `Istio` (+ `IstioCNI` on OpenShift)
+- **Use case**: Full L7 features for all workloads
+- **Overhead**: Higher resource usage per pod
+
+### Ambient Mode
+
+Modern deployment with shared L4 node proxies and optional L7 waypoint proxies:
+
+- **Resources needed**: `Istio` + `IstioCNI` + `ZTunnel`
+- **Use case**: Lower overhead, gradual adoption of L7 features
+- **Overhead**: Minimal per-node, L7 on-demand
+
+## Versioning and Support
+
+<Note>
+  Sail Operator follows Istio's versioning scheme. When Istio 1.29 is released, there's a corresponding Sail Operator 1.29 release.
+</Note>
+
+**Support Policy:**
+- Supports **n-2 Istio releases** (current + two previous minor versions)
+- Installing Sail Operator 1.29 allows deploying Istio 1.27, 1.28, or 1.29
+- Not all patch versions are included in releases
+- Version aliases available (e.g., `v1.29-latest` for latest patch)
+
+**Version Compatibility:**
+When running multiple components at different versions, each component at version `1.x` is compatible with versions `1.x-1`, `1.x`, and `1.x+1`. This enables rolling upgrades where components temporarily run at different minor versions.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get a working Istio control plane in minutes
+  </Card>
+  
+  <Card title="Installation Guide" icon="download" href="/installation">
+    Detailed installation for all platforms
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/istio">
+    Complete API documentation for all resources
+  </Card>
+  
+  <Card title="GitHub Repository" icon="github" href="https://github.com/istio-ecosystem/sail-operator">
+    View source code and contribute
+  </Card>
+</CardGroup>
+
+## Community and Support
+
+Sail Operator is an active open-source project:
+
+- **Weekly Contributor Call**: Every Thursday at 4PM CET / 10AM EST
+- **GitHub**: [istio-ecosystem/sail-operator](https://github.com/istio-ecosystem/sail-operator)
+- **Issue Tracking**: GitHub Issues for bugs and feature requests
+- **Documentation**: Comprehensive user and contributor docs
+
+<Info>
+  To subscribe to the Sail Operator community calendar, visit the [GitHub README](https://github.com/istio-ecosystem/sail-operator#contributor-call).
+</Info>

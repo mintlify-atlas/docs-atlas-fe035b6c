@@ -1,0 +1,521 @@
+---
+title: CNIValues
+description: Helm values configuration for Istio CNI component
+icon: network-wired
+---
+
+The `CNIValues` type defines the Helm values structure for configuring the Istio CNI (Container Network Interface) plugin. It is used in the `IstioCNI` custom resource.
+
+## Overview
+
+The Istio CNI plugin removes the need for privileged `NET_ADMIN` and `NET_RAW` capabilities in application pods by handling network traffic redirection at the CNI level. This is particularly important for:
+
+- OpenShift deployments (required)
+- Ambient mesh mode (required)
+- Security-hardened environments
+- Environments where privileged init containers are not allowed
+
+## Configuration Fields
+
+### CNI Plugin Configuration
+
+<ParamField path="cni" type="CNIConfig">
+  Configuration for the Istio CNI plugin.
+  
+  <Expandable title="CNI Configuration Fields">
+    <ParamField path="cni.hub" type="string">
+      Docker hub for CNI container images. Defaults to the global hub if not specified.
+      
+      ```yaml
+      cni:
+        hub: docker.io/istio
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.tag" type="string">
+      Container image tag to pull. Defaults to the global tag if not specified.
+      
+      ```yaml
+      cni:
+        tag: 1.29.1
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.variant" type="string">
+      Container image variant. Valid values: `"debug"`, `"distroless"`. Unset uses the default.
+      
+      ```yaml
+      cni:
+        variant: distroless
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.image" type="string">
+      Image name to pull from. Image will be `Hub/Image:Tag-Variant`.
+      If Image contains a "/", it replaces the entire image in the pod.
+      
+      ```yaml
+      cni:
+        image: install-cni
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.pullPolicy" type="PullPolicy">
+      Image pull policy. Valid values: `Always`, `Never`, `IfNotPresent`.
+      
+      ```yaml
+      cni:
+        pullPolicy: IfNotPresent
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.cniBinDir" type="string">
+      Directory path on the cluster node where CNI binaries are installed. Typically `/var/lib/cni/bin`.
+      
+      ```yaml
+      cni:
+        cniBinDir: /var/lib/cni/bin
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.cniConfDir" type="string">
+      Directory path on the cluster node where CNI configuration files are installed. Typically `/etc/cni/net.d`.
+      
+      ```yaml
+      cni:
+        cniConfDir: /etc/cni/net.d
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.cniConfFileName" type="string">
+      Name of the CNI plugin configuration file. Defaults to `istio-cni.conf`.
+      
+      ```yaml
+      cni:
+        cniConfFileName: istio-cni.conf
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.cniNetnsDir" type="string">
+      Directory path where network namespaces are located. Defaults to `/var/run/netns`.
+      In minikube/docker, can be `/var/run/docker/netns`.
+      
+      ```yaml
+      cni:
+        cniNetnsDir: /var/run/netns
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.excludeNamespaces" type="[]string">
+      List of namespaces that should be ignored by the CNI plugin.
+      
+      ```yaml
+      cni:
+        excludeNamespaces:
+          - istio-system
+          - kube-system
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.affinity" type="Affinity">
+      Kubernetes affinity settings for istio-cni pods. Can exclude CNI from specific nodes.
+      
+      ```yaml
+      cni:
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+              - matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: DoesNotExist
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.env" type="map[string]string">
+      Environment variables passed to the CNI container.
+      
+      ```yaml
+      cni:
+        env:
+          LOG_LEVEL: debug
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.daemonSetLabels" type="map[string]string">
+      Additional labels to apply to the istio-cni DaemonSet.
+      
+      ```yaml
+      cni:
+        daemonSetLabels:
+          app: istio-cni
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.podLabels" type="map[string]string">
+      Additional labels to apply to the istio-cni pods.
+      
+      ```yaml
+      cni:
+        podLabels:
+          sidecar.istio.io/inject: "false"
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.logging" type="GlobalLoggingConfig">
+      Logging configuration. Overrides global logging if set.
+      
+      ```yaml
+      cni:
+        logging:
+          level: "default:info,cni:debug"
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.resources" type="ResourceRequirements">
+      Kubernetes resource requests and limits for istio-cni pods.
+      
+      ```yaml
+      cni:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 100Mi
+          limits:
+            cpu: 200m
+            memory: 200Mi
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.chained" type="bool">
+      Configure as a chained CNI plugin. When `true`, configuration is added to the CNI chain.
+      When `false`, configuration is added as a standalone file.
+      
+      ```yaml
+      cni:
+        chained: true
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.provider" type="string">
+      CNI provider. Valid values: `"default"`, `"multus"`.
+      When set to `"multus"`, an additional NetworkAttachmentDefinition is deployed.
+      
+      ```yaml
+      cni:
+        provider: multus
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.rollingMaxUnavailable" type="IntOrString">
+      Number of pods that can be unavailable during rolling update.
+      Can be a number or percentage.
+      
+      ```yaml
+      cni:
+        rollingMaxUnavailable: 1
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.seccompProfile" type="SeccompProfile">
+      Seccomp profile for the container.
+      
+      ```yaml
+      cni:
+        seccompProfile:
+          type: RuntimeDefault
+      ```
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### CNI Ambient Configuration
+
+<ParamField path="cni.ambient" type="CNIAmbientConfig">
+  Configuration for Istio Ambient mesh mode.
+  
+  <Expandable title="Ambient Configuration Fields">
+    <ParamField path="cni.ambient.enabled" type="bool">
+      Enable ambient redirection. Required for ambient mesh mode.
+      
+      ```yaml
+      cni:
+        ambient:
+          enabled: true
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.ambient.configDir" type="string">
+      Directory containing ambient configuration files. Defaults to `/etc/ambient-config`.
+      
+      ```yaml
+      cni:
+        ambient:
+          configDir: /etc/ambient-config
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.ambient.dnsCapture" type="bool">
+      Enable DNS redirection in ambient mode.
+      
+      ```yaml
+      cni:
+        ambient:
+          dnsCapture: true
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.ambient.ipv6" type="bool">
+      UNSTABLE: Enable IPv6 support in ambient mode.
+      
+      ```yaml
+      cni:
+        ambient:
+          ipv6: true
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.ambient.reconcileIptablesOnStartup" type="bool">
+      Enable iptables reconciliation on startup.
+      
+      ```yaml
+      cni:
+        ambient:
+          reconcileIptablesOnStartup: true
+      ```
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### CNI Repair Configuration
+
+<ParamField path="cni.repair" type="CNIRepairConfig">
+  Configuration for the CNI repair controller. Handles broken pod detection and repair.
+  
+  <Expandable title="Repair Configuration Fields">
+    <ParamField path="cni.repair.enabled" type="bool">
+      Enable repair behavior.
+      
+      ```yaml
+      cni:
+        repair:
+          enabled: true
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.repair.labelPods" type="bool">
+      Label broken pods with `<brokenPodLabelKey>=<brokenPodLabelValue>`.
+      Note: Only one repair mode can be used at a time.
+      
+      ```yaml
+      cni:
+        repair:
+          labelPods: true
+          brokenPodLabelKey: cni.istio.io/uninitialized
+          brokenPodLabelValue: "true"
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.repair.repairPods" type="bool">
+      Dynamically repair broken pods by setting up networking even after pod start.
+      Note: Only one repair mode can be used at a time.
+      
+      ```yaml
+      cni:
+        repair:
+          repairPods: true
+      ```
+    </ParamField>
+    
+    <ParamField path="cni.repair.deletePods" type="bool">
+      Delete broken pods so they can be rescheduled on a ready node.
+      Note: Only one repair mode can be used at a time.
+      
+      ```yaml
+      cni:
+        repair:
+          deletePods: true
+      ```
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Global Configuration
+
+<ParamField path="global" type="CNIGlobalConfig">
+  Subset of global configuration applicable to CNI.
+  
+  <Expandable title="CNI Global Fields">
+    <ParamField path="global.hub" type="string">
+      Docker hub for Istio images. Inherited by CNI if not overridden.
+      
+      ```yaml
+      global:
+        hub: docker.io/istio
+      ```
+    </ParamField>
+    
+    <ParamField path="global.tag" type="string">
+      Tag for Istio docker images. Inherited by CNI if not overridden.
+      
+      ```yaml
+      global:
+        tag: 1.29.1
+      ```
+    </ParamField>
+    
+    <ParamField path="global.imagePullPolicy" type="PullPolicy">
+      Image pull policy. Inherited by CNI if not overridden.
+    </ParamField>
+    
+    <ParamField path="global.imagePullSecrets" type="[]string">
+      ImagePullSecrets for private registries. Inherited by CNI if not overridden.
+    </ParamField>
+    
+    <ParamField path="global.logAsJson" type="bool">
+      Output logs in JSON format.
+    </ParamField>
+    
+    <ParamField path="global.logging" type="GlobalLoggingConfig">
+      Global logging configuration.
+    </ParamField>
+    
+    <ParamField path="global.platform" type="string">
+      Platform where Istio is deployed. Valid values: `"openshift"`, `"gcp"`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Common Configuration Examples
+
+### Basic CNI Installation
+
+```yaml
+values:
+  cni:
+    cniBinDir: /var/lib/cni/bin
+    cniConfDir: /etc/cni/net.d
+    excludeNamespaces:
+      - istio-system
+      - kube-system
+  global:
+    hub: docker.io/istio
+    tag: 1.29.1
+```
+
+### Ambient Mesh Configuration
+
+```yaml
+values:
+  cni:
+    ambient:
+      enabled: true
+      dnsCapture: true
+    repair:
+      enabled: true
+      repairPods: true
+  global:
+    platform: ""
+```
+
+### OpenShift Configuration
+
+```yaml
+values:
+  cni:
+    cniBinDir: /var/lib/cni/bin
+    cniConfDir: /etc/cni/multus/net.d
+    chained: false
+    repair:
+      enabled: true
+      deletePods: true
+  global:
+    platform: openshift
+```
+
+### Multus CNI Configuration
+
+```yaml
+values:
+  cni:
+    provider: multus
+    chained: true
+    repair:
+      enabled: true
+      repairPods: true
+```
+
+### Resource-Constrained Environment
+
+```yaml
+values:
+  cni:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+    resourceQuotas:
+      enabled: true
+      pods: 100
+```
+
+### High Availability CNI
+
+```yaml
+values:
+  cni:
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                k8s-app: istio-cni-node
+            topologyKey: kubernetes.io/hostname
+    rollingMaxUnavailable: 1
+```
+
+### Custom Network Namespace Directory (Docker/Minikube)
+
+```yaml
+values:
+  cni:
+    cniNetnsDir: /var/run/docker/netns
+    cniBinDir: /opt/cni/bin
+    cniConfDir: /etc/cni/net.d
+```
+
+### Debug Configuration
+
+```yaml
+values:
+  cni:
+    logging:
+      level: "default:debug,cni:trace"
+    env:
+      CNI_LOG_LEVEL: debug
+  global:
+    variant: debug
+    logAsJson: true
+```
+
+## References
+
+<CardGroup cols={2}>
+  <Card title="Istio CNI Plugin" icon="plug" href="https://istio.io/latest/docs/setup/additional-setup/cni/">
+    Istio CNI plugin overview
+  </Card>
+  <Card title="Ambient Mesh" icon="layer-group" href="https://istio.io/latest/docs/ambient/">
+    Istio ambient mesh documentation
+  </Card>
+  <Card title="IstioCNI Resource" icon="file-code" href="/api/istiocni">
+    IstioCNI custom resource documentation
+  </Card>
+  <Card title="OpenShift Integration" icon="server" href="/integrations/openshift">
+    OpenShift-specific configuration
+  </Card>
+</CardGroup>

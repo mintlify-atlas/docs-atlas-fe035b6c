@@ -1,0 +1,375 @@
+---
+title: IstioRevisionTag
+description: API reference for the IstioRevisionTag custom resource
+---
+
+## Overview
+
+The `IstioRevisionTag` resource creates a stable revision label that references an `Istio` or `IstioRevision` object. This allows you to manage stable revision tags without having to use `istioctl` or Helm directly.
+
+Revision tags are useful for canary upgrades, where you can:
+1. Create a new revision with a different version
+2. Point a stable tag (like "prod" or "default") to the new revision
+3. Migrate workloads to the new revision incrementally
+4. Switch the tag to point to the new revision when ready
+
+When referencing an `Istio` resource, the operator automatically updates the tag to follow the active revision.
+
+**API Group:** `sailoperator.io/v1`
+
+**Kind:** `IstioRevisionTag`
+
+**Scope:** Cluster
+
+**Short Name:** `istiorevtag`
+
+## Spec Fields
+
+The `spec` field defines which revision the tag should reference.
+
+<ParamField path="targetRef" type="object" required>
+  References either an Istio or IstioRevision object in the cluster. When referencing an Istio object, the Sail Operator automatically updates the reference to the Istio object's active revision.
+  
+  <Expandable title="targetRef fields">
+    <ParamField path="targetRef.kind" type="string" required>
+      The kind of the target resource.
+      
+      **Validation:**
+      - Minimum length: 1
+      - Maximum length: 253
+      
+      **Valid values:** `Istio` or `IstioRevision`
+      
+      **Example:** `Istio`
+    </ParamField>
+    
+    <ParamField path="targetRef.name" type="string" required>
+      The name of the target resource.
+      
+      **Validation:**
+      - Minimum length: 1
+      - Maximum length: 253
+      
+      **Example:** `default`
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Status Fields
+
+The `status` field reports the observed state of the IstioRevisionTag resource.
+
+<ResponseField name="observedGeneration" type="integer">
+  The most recent generation observed for this IstioRevisionTag object. It corresponds to the object's generation, which is updated on mutation by the API Server.
+</ResponseField>
+
+<ResponseField name="conditions" type="array">
+  Represents the latest available observations of the object's current state.
+  
+  <Expandable title="condition fields">
+    <ResponseField name="type" type="string">
+      The type of this condition. Possible values:
+      - `Reconciled`: Signifies whether the controller has successfully reconciled the resources
+      - `InUse`: Signifies whether any workload is configured to use this revision tag
+    </ResponseField>
+    
+    <ResponseField name="status" type="string">
+      The status of this condition. Can be `True`, `False`, or `Unknown`.
+    </ResponseField>
+    
+    <ResponseField name="reason" type="string">
+      A unique, single-word, CamelCase reason for the condition's last transition.
+      
+      Possible reasons:
+      - `Healthy`: The revision tag has been successfully reconciled and is in use
+      - `NameAlreadyExists`: An IstioRevision with the same name as the IstioRevisionTag already exists
+      - `RefNotFound`: The resource referenced by the tag's targetRef was not found
+      - `ReconcileError`: The reconciliation has failed, but will be retried
+      - `ReferencedByWorkloads`: The tag is referenced by at least one pod or namespace
+      - `NotReferencedByAnything`: The tag is not referenced by any pod or namespace
+      - `UsageCheckFailed`: The operator could not check whether any workloads use the tag
+    </ResponseField>
+    
+    <ResponseField name="message" type="string">
+      Human-readable message indicating details about the last transition.
+    </ResponseField>
+    
+    <ResponseField name="lastTransitionTime" type="string">
+      Last time the condition transitioned from one status to another.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="state" type="string">
+  Reports the current state of the object. This is a summary of the most relevant condition reason.
+</ResponseField>
+
+<ResponseField name="istiodNamespace" type="string">
+  Stores the namespace of the corresponding Istiod instance.
+</ResponseField>
+
+<ResponseField name="istioRevision" type="string">
+  Stores the name of the referenced IstioRevision.
+</ResponseField>
+
+## Examples
+
+### Tagging an Istio Resource
+
+Create a tag that automatically follows the active revision:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+---
+apiVersion: sailoperator.io/v1
+kind: IstioRevisionTag
+metadata:
+  name: default
+spec:
+  targetRef:
+    kind: Istio
+    name: default
+```
+
+With this configuration:
+- The operator creates a new IstioRevision when you update the Istio version
+- The IstioRevisionTag automatically points to the active revision
+- Namespaces labeled with `istio.io/rev=default` use the active revision
+
+### Tagging a Specific IstioRevision
+
+Create a tag that points to a specific revision:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioRevisionTag
+metadata:
+  name: prod
+spec:
+  targetRef:
+    kind: IstioRevision
+    name: default-v1-29-1
+```
+
+This creates a stable "prod" tag that points to a specific revision.
+
+### Canary Upgrade with Revision Tags
+
+Implement a canary upgrade workflow:
+
+```yaml
+# Step 1: Deploy initial version with RevisionBased strategy
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.28.5
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+---
+# Step 2: Create a stable "prod" tag
+apiVersion: sailoperator.io/v1
+kind: IstioRevisionTag
+metadata:
+  name: prod
+spec:
+  targetRef:
+    kind: Istio
+    name: default
+---
+# Step 3: Label namespaces to use the "prod" tag
+# kubectl label namespace my-app istio.io/rev=prod
+
+# Step 4: Upgrade to new version (creates new revision)
+# kubectl patch istio default --type merge -p '{"spec":{"version":"v1.29.1"}}'
+
+# Step 5: Create a canary tag pointing to new revision
+apiVersion: sailoperator.io/v1
+kind: IstioRevisionTag
+metadata:
+  name: canary
+spec:
+  targetRef:
+    kind: IstioRevision
+    name: default-v1-29-1
+---
+# Step 6: Test with canary namespace
+# kubectl label namespace canary-app istio.io/rev=canary
+
+# Step 7: When ready, update prod tag to point to new revision
+# kubectl patch istiorevisiontag prod --type merge -p '{"spec":{"targetRef":{"kind":"IstioRevision","name":"default-v1-29-1"}}}'
+```
+
+## Common Usage Patterns
+
+### Viewing Revision Tags
+
+List all IstioRevisionTag resources:
+
+```bash
+kubectl get istiorevisiontags
+```
+
+Example output:
+```
+NAME      STATUS    IN USE   REVISION          AGE
+default   Healthy   True     default-v1-29-1   10m
+prod      Healthy   True     default-v1-28-5   15m
+canary    Healthy   False    default-v1-29-1   5m
+```
+
+### Checking Which Revision a Tag Points To
+
+```bash
+kubectl get istiorevisiontag prod -o jsonpath='{.status.istioRevision}'
+```
+
+### Finding Workloads Using a Tag
+
+Find namespaces using a specific tag:
+
+```bash
+kubectl get namespaces -l istio.io/rev=prod
+```
+
+Find pods using a specific tag:
+
+```bash
+kubectl get pods -A -l istio.io/rev=prod
+```
+
+### Switching a Tag to a Different Revision
+
+Update the tag to point to a different revision:
+
+```bash
+kubectl patch istiorevisiontag prod --type merge -p '{
+  "spec": {
+    "targetRef": {
+      "kind": "IstioRevision",
+      "name": "default-v1-29-1"
+    }
+  }
+}'
+```
+
+### Using Tags with Automatic Sidecar Injection
+
+Label a namespace to use a specific tag:
+
+```bash
+kubectl label namespace my-app istio.io/rev=prod
+```
+
+All new pods in this namespace will be injected with sidecars from the revision that "prod" points to.
+
+### Migrating Workloads Between Revisions
+
+1. Create a new tag for the target revision
+2. Update namespace labels to use the new tag
+3. Restart pods to pick up the new sidecars
+
+```bash
+# Create canary tag
+kubectl apply -f canary-tag.yaml
+
+# Update namespace label
+kubectl label namespace my-app istio.io/rev=canary --overwrite
+
+# Restart pods
+kubectl rollout restart deployment -n my-app
+```
+
+## Best Practices
+
+### Use Descriptive Tag Names
+
+Choose tag names that reflect their purpose:
+- `prod` for production traffic
+- `canary` for canary testing
+- `stable` for the last known good version
+- `latest` for the newest version
+
+### Reference Istio for Auto-Following
+
+When using RevisionBased updates, reference the `Istio` resource in your default tag to automatically follow the active revision:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioRevisionTag
+metadata:
+  name: default
+spec:
+  targetRef:
+    kind: Istio  # Automatically follows active revision
+    name: default
+```
+
+### Reference IstioRevision for Pinning
+
+When you need a tag to stay on a specific revision, reference the `IstioRevision` directly:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioRevisionTag
+metadata:
+  name: stable
+spec:
+  targetRef:
+    kind: IstioRevision  # Pinned to specific revision
+    name: default-v1-28-5
+```
+
+### Monitor Tag Usage
+
+Before deleting or changing a tag, check if it's in use:
+
+```bash
+kubectl get istiorevisiontag prod -o jsonpath='{.status.conditions[?(@.type=="InUse")].status}'
+```
+
+## Troubleshooting
+
+### Tag Not Found Error
+
+If the referenced resource is not found:
+
+```bash
+kubectl get istiorevisiontag my-tag -o jsonpath='{.status.conditions}' | jq
+```
+
+Look for `RefNotFound` reason and verify:
+- The target Istio or IstioRevision exists
+- The name is spelled correctly
+- The kind is correct
+
+### Name Conflict
+
+If you see `NameAlreadyExists` error, an IstioRevision with the same name as your tag already exists. Choose a different name for the tag.
+
+### Tag Not Applied to Pods
+
+If pods are not using the tag:
+1. Verify the namespace label: `kubectl get namespace my-app -o jsonpath='{.metadata.labels.istio\.io/rev}'`
+2. Check if the tag is healthy: `kubectl get istiorevisiontag my-tag`
+3. Restart pods to pick up the new configuration
+
+## Related Resources
+
+<Card title="Istio" icon="network-wired" href="/api/istio">
+  Create tags that automatically follow the active Istio revision
+</Card>
+
+<Card title="IstioRevision" icon="code-branch" href="/api/istiorevision">
+  Create tags that point to specific IstioRevision objects
+</Card>

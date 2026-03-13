@@ -1,0 +1,462 @@
+---
+title: Observability Integration
+description: Configure monitoring, metrics, and tracing for your service mesh
+icon: chart-line
+---
+
+Proper observability is essential for operating a service mesh in production. This guide shows how to integrate Istio with various observability tools.
+
+## OpenShift Monitoring Stack
+
+The easiest way to get production-grade metrics collection on OpenShift is to use the built-in user-workload monitoring stack.
+
+<Note>
+  You must [enable User Workload monitoring](https://docs.openshift.com/container-platform/latest/observability/monitoring/enabling-monitoring-for-user-defined-projects.html) before proceeding.
+</Note>
+
+### Scraping Control Plane Metrics
+
+Create a ServiceMonitor to collect metrics from istiod:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: istiod-monitor
+  namespace: istio-system
+spec:
+  targetLabels:
+  - app
+  selector:
+    matchLabels:
+      istio: pilot
+  endpoints:
+  - port: http-monitoring
+    interval: 30s
+```
+
+Apply the ServiceMonitor:
+
+```bash
+kubectl apply -f servicemonitor.yaml
+```
+
+### Scraping Data Plane Metrics
+
+Create a PodMonitor to scrape metrics from istio-proxy sidecars:
+
+<Warning>
+  This resource must be created in **all namespaces** where you're running sidecars.
+</Warning>
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: istio-proxies-monitor
+  namespace: istio-system
+spec:
+  selector:
+    matchExpressions:
+    - key: istio-prometheus-ignore
+      operator: DoesNotExist
+  podMetricsEndpoints:
+  - path: /stats/prometheus
+    interval: 30s
+    relabelings:
+    - action: keep
+      sourceLabels: ["__meta_kubernetes_pod_container_name"]
+      regex: "istio-proxy"
+    - action: keep
+      sourceLabels: ["__meta_kubernetes_pod_annotationpresent_prometheus_io_scrape"]
+    - action: replace
+      regex: (\d+);(([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4})
+      replacement: "[$2]:$1"
+      sourceLabels: ["__meta_kubernetes_pod_annotation_prometheus_io_port","__meta_kubernetes_pod_ip"]
+      targetLabel: "__address__"
+    - action: replace
+      regex: (\d+);((([0-9]+?)(\.|$)){4})
+      replacement: "$2:$1"
+      sourceLabels: ["__meta_kubernetes_pod_annotation_prometheus_io_port","__meta_kubernetes_pod_ip"]
+      targetLabel: "__address__"
+    - action: labeldrop
+      regex: "__meta_kubernetes_pod_label_(.+)"
+    - sourceLabels: ["__meta_kubernetes_namespace"]
+      action: replace
+      targetLabel: namespace
+    - sourceLabels: ["__meta_kubernetes_pod_name"]
+      action: replace
+      targetLabel: pod_name
+```
+
+Apply the PodMonitor:
+
+```bash
+kubectl apply -f podmonitor.yaml
+```
+
+### Viewing Metrics
+
+Once configured, you can view your metrics in the OpenShift Console:
+
+<Steps>
+  <Step title="Navigate to Metrics">
+    In the OpenShift Console, go to **Observe** → **Metrics**
+  </Step>
+  
+  <Step title="Query Istio Metrics">
+    Try queries like:
+    - `istio_requests_total` - Total request count
+    - `istio_request_duration_milliseconds` - Request latency
+    - `istio_tcp_connections_opened_total` - TCP connections
+  </Step>
+</Steps>
+
+## Distributed Tracing
+
+Configure Istio to send traces to OpenShift Distributed Tracing (based on Tempo).
+
+### Prerequisites
+
+<Check>
+  - Tempo stack is installed and configured
+  - OpenTelemetry collector is deployed in istio-system namespace
+  - Istio instance is created with the `openshift` profile
+  - IstioCNI instance is created with the `openshift` profile
+</Check>
+
+### Configuring Tracing
+
+<Steps>
+  <Step title="Enable Tracing in Istio">
+    Update your Istio resource to enable tracing:
+    
+    ```yaml
+    apiVersion: sailoperator.io/v1
+    kind: Istio
+    metadata:
+      name: default
+    spec:
+      version: v1.29.1
+      namespace: istio-system
+      values:
+        meshConfig:
+          enableTracing: true
+          extensionProviders:
+          - name: otel-tracing
+            opentelemetry:
+              port: 4317
+              service: otel-collector.istio-system.svc.cluster.local
+    ```
+    
+    The `service` field should point to your OpenTelemetry collector service.
+  </Step>
+  
+  <Step title="Activate OpenTelemetry Tracer">
+    Create a Telemetry resource:
+    
+    ```yaml
+    apiVersion: telemetry.istio.io/v1
+    kind: Telemetry
+    metadata:
+      name: otel-demo
+      namespace: istio-system
+    spec:
+      tracing:
+      - providers:
+        - name: otel-tracing
+        randomSamplingPercentage: 100
+    ```
+    
+    <Tip>
+      For production, use a lower sampling percentage (e.g., 1-10%) to reduce overhead.
+    </Tip>
+  </Step>
+  
+  <Step title="Generate Test Traffic">
+    Deploy a test application and generate traffic:
+    
+    ```bash
+    # Deploy bookinfo sample
+    kubectl create namespace bookinfo
+    kubectl label namespace bookinfo istio-injection=enabled
+    kubectl apply -n bookinfo -f https://raw.githubusercontent.com/istio/istio/master/samples/bookinfo/platform/kube/bookinfo.yaml
+    
+    # Generate traffic
+    for i in {1..100}; do
+      curl http://$GATEWAY_URL/productpage
+    done
+    ```
+  </Step>
+  
+  <Step title="View Traces">
+    Access the Tempo query frontend:
+    
+    ```bash
+    kubectl get routes -n tempo tempo-sample-query-frontend-tempo
+    ```
+    
+    Open the route URL in your browser to view traces.
+  </Step>
+</Steps>
+
+## Kiali Integration
+
+[Kiali](https://kiali.io/) provides a graphical interface for observing your service mesh. Integration depends on your metrics and tracing setup.
+
+<Note>
+  These instructions assume Kiali is installed using the Kiali Operator.
+</Note>
+
+### Integrating with OpenShift Monitoring
+
+If you've configured OpenShift monitoring as described above, you can connect Kiali to it.
+
+<Steps>
+  <Step title="Grant Kiali Access">
+    Create a ClusterRoleBinding so Kiali can view user-workload metrics:
+    
+    ```yaml
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: kiali-monitoring-rbac
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: cluster-monitoring-view
+    subjects:
+    - kind: ServiceAccount
+      name: kiali-service-account
+      namespace: istio-system
+    ```
+  </Step>
+  
+  <Step title="Find Istio Revision Name">
+    ```bash
+    kubectl get istiorevisions.sailoperator.io
+    ```
+    
+    Example output:
+    ```
+    NAME   READY   STATUS    IN USE   VERSION      AGE
+    test   True    Healthy   True     v1.29.1      119m
+    ```
+  </Step>
+  
+  <Step title="Create Kiali Resource">
+    Create a Kiali instance pointing to your Istio deployment:
+    
+    ```yaml
+    apiVersion: kiali.io/v1alpha1
+    kind: Kiali
+    metadata:
+      name: kiali-user-workload-monitoring
+      namespace: istio-system
+    spec:
+      external_services:
+        istio:
+          config_map_name: istio-test  # Replace 'test' with your revision
+          istio_sidecar_injector_config_map_name: istio-sidecar-injector-test
+          istiod_deployment_name: istiod-test
+          url_service_version: 'http://istiod-test.istio-system:15014/version'
+        prometheus:
+          auth:
+            type: bearer
+            use_kiali_token: true
+          thanos_proxy:
+            enabled: true
+          url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
+    ```
+    
+    <Warning>
+      Replace `test` in the Istio field names with your actual revision name.
+    </Warning>
+  </Step>
+</Steps>
+
+### Integrating with Distributed Tracing
+
+Connect Kiali to your tracing backend to view distributed traces.
+
+<Steps>
+  <Step title="Configure Tracing in Kiali">
+    Update your Kiali resource:
+    
+    ```yaml
+    apiVersion: kiali.io/v1alpha1
+    kind: Kiali
+    metadata:
+      name: kiali-user-workload-monitoring
+      namespace: istio-system
+    spec:
+      external_services:
+        grafana:
+          enabled: true
+          url: "http://grafana-istio-system.apps-crc.testing/"
+        tracing:
+          enabled: true
+          provider: tempo
+          use_grpc: false
+          in_cluster_url: http://tempo-sample-query-frontend.tempo:3200
+          url: 'https://tempo-sample-query-frontend-tempo.apps-crc.testing'
+          tempo_config:
+            org_id: "1"
+            datasource_uid: "a8d2ef1c-d31c-4de5-a90b-e7bc5252cd00"
+    ```
+    
+    <Info>
+      The `grafana` and `tempo_config` sections enable the "View in Tracing" link from the Traces tab.
+    </Info>
+  </Step>
+  
+  <Step title="View Traces in Kiali">
+    1. Select a Workload, Service, or App in Kiali
+    2. Click the **Traces** tab
+    3. View distributed traces for that component
+  </Step>
+</Steps>
+
+## Standalone Observability Addons
+
+For non-OpenShift environments or development purposes, you can deploy standalone observability tools.
+
+### Deploying Prometheus and Jaeger
+
+```bash
+# Deploy Prometheus
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/master/samples/addons/prometheus.yaml
+
+# Deploy Jaeger
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/master/samples/addons/jaeger.yaml
+```
+
+### Deploying Kiali with Helm
+
+<Steps>
+  <Step title="Install Kiali Operator">
+    ```bash
+    helm install \
+      --namespace kiali-operator \
+      --create-namespace \
+      kiali-operator \
+      kiali/kiali-operator
+    ```
+  </Step>
+  
+  <Step title="Find Your Istio Revision">
+    ```bash
+    kubectl get istios
+    ```
+  </Step>
+  
+  <Step title="Create Kiali Instance">
+    ```yaml
+    apiVersion: kiali.io/v1alpha1
+    kind: Kiali
+    metadata:
+      name: kiali
+      namespace: istio-system
+    spec:
+      external_services:
+        istio:
+          config_map_name: istio-<revision-name>
+          istio_sidecar_injector_config_map_name: istio-sidecar-injector-<revision-name>
+          istiod_deployment_name: istiod-<revision-name>
+          url_service_version: 'http://istiod-<revision-name>.istio-system:15014/version'
+        tracing:
+          enabled: true
+        grafana:
+          enabled: false
+    ```
+  </Step>
+  
+  <Step title="Access Kiali">
+    Port forward to access Kiali:
+    
+    ```bash
+    kubectl port-forward -n istio-system svc/kiali 20001:20001
+    ```
+    
+    Access at: http://localhost:20001
+  </Step>
+</Steps>
+
+## Key Metrics to Monitor
+
+<CardGroup cols={2}>
+  <Card title="Request Rate" icon="chart-line">
+    `istio_requests_total` - Monitor request volume and detect anomalies
+  </Card>
+  
+  <Card title="Latency" icon="clock">
+    `istio_request_duration_milliseconds` - Track response times and identify slow services
+  </Card>
+  
+  <Card title="Error Rate" icon="exclamation-triangle">
+    `istio_requests_total{response_code=~"5.."}` - Monitor 5xx errors
+  </Card>
+  
+  <Card title="Success Rate" icon="check-circle">
+    `rate(istio_requests_total{response_code!~"5.."}[5m])` - Track successful requests
+  </Card>
+</CardGroup>
+
+## Troubleshooting Observability
+
+<AccordionGroup>
+  <Accordion title="No metrics appearing in Prometheus">
+    Check that:
+    - ServiceMonitor/PodMonitor is in the correct namespace
+    - User workload monitoring is enabled
+    - Pods have the `prometheus.io/scrape` annotation
+    
+    ```bash
+    kubectl get servicemonitor -n istio-system
+    kubectl get podmonitor -n istio-system
+    ```
+  </Accordion>
+  
+  <Accordion title="Traces not appearing">
+    Verify:
+    - OpenTelemetry collector is running
+    - Telemetry resource is applied
+    - Traffic is being generated
+    
+    ```bash
+    kubectl get pods -n istio-system -l app=otel-collector
+    kubectl get telemetry -n istio-system
+    ```
+  </Accordion>
+  
+  <Accordion title="Kiali not showing data">
+    Check:
+    - Kiali has correct RBAC permissions
+    - Prometheus URL is accessible from Kiali pod
+    - Istio revision name matches in Kiali config
+    
+    ```bash
+    kubectl logs -n istio-system -l app=kiali
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Istio Observability" icon="book" href="https://istio.io/latest/docs/ops/integrations/">
+    Official Istio observability documentation
+  </Card>
+  
+  <Card title="Kiali Docs" icon="diagram-project" href="https://kiali.io/docs/">
+    Learn more about Kiali features
+  </Card>
+  
+  <Card title="Install Addons" icon="puzzle-piece" href="/integrations/addons">
+    Deploy sample applications with observability
+  </Card>
+  
+  <Card title="Production Hardening" icon="shield" href="https://istio.io/latest/docs/ops/best-practices/security/">
+    Security best practices for production
+  </Card>
+</CardGroup>

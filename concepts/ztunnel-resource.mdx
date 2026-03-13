@@ -1,0 +1,648 @@
+---
+title: ZTunnel Resource
+description: Manage the ztunnel proxy for Istio's ambient mesh mode
+---
+
+## Overview
+
+The `ZTunnel` resource manages the lifecycle of ztunnel, Istio's Layer 4 proxy component for ambient mesh. Ztunnel (zero-trust tunnel) runs as a DaemonSet on every node and provides secure Layer 4 connectivity for pods in the ambient mesh without requiring sidecar containers.
+
+<Info>
+  ZTunnel is **required** for Istio's ambient mesh mode. It is not used in traditional sidecar deployments.
+</Info>
+
+## What is ZTunnel?
+
+ZTunnel is a purpose-built proxy for ambient mesh that:
+
+- **Handles L4 Traffic**: Provides mTLS, authentication, and authorization at Layer 4
+- **Node-Level Proxy**: Runs as a DaemonSet, one pod per node
+- **Zero-Touch**: Workloads automatically get mesh features without modification
+- **Lightweight**: Written in Rust for performance and low resource usage
+- **Complement to Waypoint**: Handles L4 while waypoint proxies handle L7
+
+## Architecture
+
+In ambient mesh, traffic flows through ztunnel:
+
+```
+┌─────────────────────────────────────────────┐
+│                   Node                       │
+│                                              │
+│  ┌──────────┐         ┌──────────┐         │
+│  │  Pod A   │◄───────►│ ZTunnel  │         │
+│  └──────────┘         │ DaemonSet│         │
+│                        └────┬─────┘         │
+│                             │               │
+│  ┌──────────┐              │               │
+│  │  Pod B   │◄─────────────┘               │
+│  └──────────┘                               │
+└─────────────────────────────────────────────┘
+                    │
+                    ▼ mTLS
+┌─────────────────────────────────────────────┐
+│              Other Node/Cluster              │
+└─────────────────────────────────────────────┘
+```
+
+## Basic Example
+
+Here's a minimal `ZTunnel` resource:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+```
+
+This deploys ztunnel as a DaemonSet in the `ztunnel` namespace.
+
+<Warning>
+  The `metadata.name` **must** be `default`. This is enforced by CRD validation to ensure only one `ZTunnel` resource exists cluster-wide.
+</Warning>
+
+## Spec Fields
+
+### version
+
+<ParamField path="spec.version" type="string" required>
+  The Istio version of ztunnel to install.
+  
+  **Format**: `v1.29.1` (specific) or `v1.29-latest` (latest patch)
+  
+  **Default**: `v1.29.1`
+  
+  **Note**: Ztunnel version should match the Istio control plane version.
+</ParamField>
+
+### namespace
+
+<ParamField path="spec.namespace" type="string" required>
+  The namespace where the ztunnel DaemonSet will be installed.
+  
+  **Default**: `ztunnel`
+  
+  **Immutable**: This field cannot be changed after creation.
+</ParamField>
+
+### values
+
+<ParamField path="spec.values" type="object">
+  Helm values for the ztunnel chart. This exposes all ztunnel-specific configuration options.
+  
+  See [ZTunnel Values Reference](/api/ztunnel-values) for available options.
+</ParamField>
+
+## Status Fields
+
+The `ZTunnel` resource status provides information about the DaemonSet state:
+
+### observedGeneration
+
+<ResponseField name="status.observedGeneration" type="integer">
+  The most recent generation observed by the controller.
+</ResponseField>
+
+### state
+
+<ResponseField name="status.state" type="string">
+  A high-level summary of the ztunnel state.
+  
+  **Possible values**:
+  - `Healthy` - DaemonSet is ready
+  - `ReconcileError` - Reconciliation failed
+  - `DaemonSetNotReady` - DaemonSet exists but not ready
+  - `ReadinessCheckFailed` - Cannot determine readiness
+</ResponseField>
+
+### conditions
+
+<ResponseField name="status.conditions" type="array">
+  Detailed conditions about the ztunnel state.
+  
+  **Condition Types**:
+  - `Reconciled` - Whether reconciliation succeeded
+  - `Ready` - Whether the DaemonSet is ready
+</ResponseField>
+
+## Examples
+
+### Basic Ambient Mesh Deployment
+
+Complete ambient mesh setup:
+
+```yaml
+---
+# 1. Deploy CNI (required for ambient)
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+  profile: ambient
+---
+# 2. Deploy Istio control plane
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  values:
+    pilot:
+      cni:
+        enabled: true
+---
+# 3. Deploy ZTunnel
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+```
+
+### Custom Resource Limits
+
+Configure resources for ztunnel pods:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+  values:
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1024Mi
+```
+
+### High-Availability Configuration
+
+Configure ztunnel for high availability:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+  values:
+    # Prioritize ztunnel scheduling
+    priorityClassName: system-node-critical
+    
+    # Resources for high-traffic nodes
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1024Mi
+      limits:
+        cpu: 2000m
+        memory: 2048Mi
+```
+
+### Debug Configuration
+
+Enable debug logging:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+  values:
+    logLevel: debug
+```
+
+## Ambient Mesh Dependencies
+
+For ambient mesh, you need all three components:
+
+### Deployment Order
+
+1. **IstioCNI**: Handles network traffic redirection
+2. **Istio**: Control plane with ambient profile
+3. **ZTunnel**: L4 proxy for ambient data plane
+
+### Verifying Dependencies
+
+Check all components are healthy:
+
+```bash
+# Check IstioCNI
+kubectl get istiocni default
+
+# Check Istio
+kubectl get istio default
+
+# Check ZTunnel
+kubectl get ztunnel default
+```
+
+All should show:
+- `READY: True`
+- `STATUS: Healthy`
+
+## Update Strategy
+
+The `ZTunnel` resource uses **InPlace** updates:
+
+1. When you change `spec.version` or `spec.values`
+2. The operator updates the DaemonSet in place
+3. Pods are rolled out node by node
+4. Existing mesh traffic continues during the update
+
+### Updating ZTunnel Version
+
+Update to a new version:
+
+```bash
+kubectl patch ztunnel default --type='merge' -p '{"spec":{"version":"v1.29.1"}}'
+```
+
+Monitor the rollout:
+
+```bash
+kubectl rollout status daemonset ztunnel -n ztunnel
+```
+
+<Info>
+  When updating the Istio control plane, update ZTunnel to the matching version for compatibility.
+</Info>
+
+## Common Patterns
+
+### Checking ZTunnel Status
+
+Get the current state:
+
+```bash
+kubectl get ztunnel default
+```
+
+Output:
+```
+NAME      NAMESPACE   READY   STATUS    VERSION    AGE
+default   ztunnel     True    Healthy   v1.29.1    5d
+```
+
+View detailed status:
+
+```bash
+kubectl get ztunnel default -o yaml
+```
+
+### Verifying ZTunnel Deployment
+
+Check the DaemonSet:
+
+```bash
+kubectl get daemonset ztunnel -n ztunnel
+```
+
+Check pods on each node:
+
+```bash
+kubectl get pods -n ztunnel -o wide
+```
+
+Output:
+```
+NAME            READY   STATUS    RESTARTS   AGE   NODE
+ztunnel-abc12   1/1     Running   0          5d    node-1
+ztunnel-def34   1/1     Running   0          5d    node-2
+ztunnel-ghi56   1/1     Running   0          5d    node-3
+```
+
+### Viewing ZTunnel Logs
+
+Check logs from ztunnel:
+
+```bash
+kubectl logs -n ztunnel -l app=ztunnel
+```
+
+Follow logs:
+
+```bash
+kubectl logs -n ztunnel -l app=ztunnel -f
+```
+
+Logs from a specific node:
+
+```bash
+kubectl logs -n ztunnel -l app=ztunnel --field-selector spec.nodeName=node-1
+```
+
+### Checking ZTunnel Metrics
+
+ZTunnel exposes Prometheus metrics:
+
+```bash
+# Port-forward to ztunnel
+kubectl port-forward -n ztunnel daemonset/ztunnel 15020:15020
+
+# Query metrics
+curl http://localhost:15020/metrics
+```
+
+Key metrics:
+- `ztunnel_connection_opens_total` - Total connections opened
+- `ztunnel_connection_closes_total` - Total connections closed
+- `ztunnel_bytes_sent` - Bytes sent through ztunnel
+- `ztunnel_bytes_recv` - Bytes received through ztunnel
+
+## Enabling Ambient Mesh for Workloads
+
+Once ZTunnel is deployed, enable ambient mesh for namespaces:
+
+### Label Namespace
+
+```bash
+kubectl label namespace default istio.io/dataplane-mode=ambient
+```
+
+### Verify Ambient Enrollment
+
+Check pods are in ambient mesh:
+
+```bash
+kubectl get pods -n default -o jsonpath='{.items[*].metadata.annotations.ambient\.istio\.io/redirection}'
+```
+
+### Remove from Ambient Mesh
+
+Remove the label to opt-out:
+
+```bash
+kubectl label namespace default istio.io/dataplane-mode-
+```
+
+## ZTunnel vs Sidecar
+
+Comparison of deployment models:
+
+| Aspect | Sidecar | ZTunnel (Ambient) |
+|--------|---------|-------------------|
+| **Deployment** | Container per pod | DaemonSet per node |
+| **Protocol** | L4 + L7 | L4 only (L7 via waypoint) |
+| **Resource Usage** | Per workload | Shared per node |
+| **Latency** | Lower (same pod) | Slightly higher (node proxy) |
+| **Transparency** | Requires injection | Fully transparent |
+| **Upgrade** | Requires pod restart | Node-level rolling update |
+| **Use Case** | Rich L7 features per pod | Zero-touch L4 mesh |
+
+## Validation Rules
+
+The `ZTunnel` resource includes strict validation:
+
+<AccordionGroup>
+  <Accordion title="Singleton Constraint">
+    Only one `ZTunnel` resource can exist, and it must be named `default`:
+    
+    ```yaml
+    rule: "self.metadata.name == 'default'"
+    message: "metadata.name must be 'default'"
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Deploy in Order">
+    Always deploy components in the correct order:
+    
+    ```bash
+    # 1. Deploy CNI and wait
+    kubectl apply -f istiocni.yaml
+    kubectl wait --for=condition=Ready istiocni/default --timeout=300s
+    
+    # 2. Deploy Istio and wait
+    kubectl apply -f istio.yaml
+    kubectl wait --for=condition=Ready istio/default --timeout=300s
+    
+    # 3. Deploy ZTunnel
+    kubectl apply -f ztunnel.yaml
+    kubectl wait --for=condition=Ready ztunnel/default --timeout=300s
+    ```
+  </Accordion>
+  
+  <Accordion title="Match Versions">
+    Keep ZTunnel version aligned with Istio control plane:
+    
+    ```yaml
+    # Both should use the same version
+    spec:
+      version: v1.29.1
+    ```
+  </Accordion>
+  
+  <Accordion title="Set Resource Limits">
+    Configure appropriate resource limits based on cluster size:
+    
+    **Small cluster (< 50 nodes)**:
+    ```yaml
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1024Mi
+    ```
+    
+    **Large cluster (> 100 nodes)**:
+    ```yaml
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1024Mi
+      limits:
+        cpu: 2000m
+        memory: 2048Mi
+    ```
+  </Accordion>
+  
+  <Accordion title="Monitor DaemonSet Health">
+    Set up monitoring for ztunnel pods:
+    
+    ```bash
+    # Check all pods are running
+    kubectl get pods -n ztunnel -l app=ztunnel
+    
+    # Alert if any pod is not ready
+    kubectl get pods -n ztunnel -l app=ztunnel -o json | \
+      jq '.items[] | select(.status.conditions[] | select(.type=="Ready" and .status!="True"))'
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+### ZTunnel Not Ready
+
+1. Check DaemonSet status:
+   ```bash
+   kubectl get daemonset ztunnel -n ztunnel
+   ```
+
+2. Check pod status:
+   ```bash
+   kubectl get pods -n ztunnel
+   ```
+
+3. Check logs for errors:
+   ```bash
+   kubectl logs -n ztunnel -l app=ztunnel --tail=50
+   ```
+
+4. Check for resource constraints:
+   ```bash
+   kubectl describe pod -n ztunnel -l app=ztunnel
+   ```
+
+### Pods Not Joining Ambient Mesh
+
+If pods don't get ambient mesh features:
+
+1. Verify namespace is labeled:
+   ```bash
+   kubectl get namespace default -o jsonpath='{.metadata.labels}'
+   ```
+
+2. Check CNI is healthy:
+   ```bash
+   kubectl get istiocni default
+   ```
+
+3. Check ztunnel is running on the node:
+   ```bash
+   kubectl get pods -n ztunnel -o wide | grep <node-name>
+   ```
+
+4. Check ztunnel logs for connection errors:
+   ```bash
+   kubectl logs -n ztunnel -l app=ztunnel --field-selector spec.nodeName=<node-name>
+   ```
+
+### Connection Issues
+
+If pods in ambient mesh can't communicate:
+
+1. Check ztunnel is connected to control plane:
+   ```bash
+   kubectl logs -n ztunnel -l app=ztunnel | grep "connection.*established"
+   ```
+
+2. Verify mTLS certificates:
+   ```bash
+   kubectl logs -n ztunnel -l app=ztunnel | grep -i cert
+   ```
+
+3. Check for RBAC issues:
+   ```bash
+   kubectl logs -n ztunnel -l app=ztunnel | grep -i "permission denied"
+   ```
+
+4. Verify network policies aren't blocking:
+   ```bash
+   kubectl get networkpolicies --all-namespaces
+   ```
+
+### High CPU/Memory Usage
+
+If ztunnel uses excessive resources:
+
+1. Check current resource usage:
+   ```bash
+   kubectl top pods -n ztunnel
+   ```
+
+2. Check for connection leaks:
+   ```bash
+   kubectl exec -n ztunnel daemonset/ztunnel -- netstat -an | wc -l
+   ```
+
+3. Review metrics:
+   ```bash
+   kubectl port-forward -n ztunnel daemonset/ztunnel 15020:15020
+   curl http://localhost:15020/metrics | grep connection
+   ```
+
+4. Increase resource limits if needed:
+   ```bash
+   kubectl patch ztunnel default --type='merge' -p '{
+     "spec": {
+       "values": {
+         "resources": {
+           "limits": {
+             "cpu": "2000m",
+             "memory": "2048Mi"
+           }
+         }
+       }
+     }
+   }'
+   ```
+
+### ZTunnel Update Stuck
+
+1. Check DaemonSet rollout:
+   ```bash
+   kubectl rollout status daemonset ztunnel -n ztunnel
+   ```
+
+2. Check for pods in error state:
+   ```bash
+   kubectl get pods -n ztunnel -o wide
+   ```
+
+3. Check for node issues:
+   ```bash
+   kubectl get nodes
+   kubectl describe node <node-name>
+   ```
+
+4. Force pod deletion if needed:
+   ```bash
+   kubectl delete pod -n ztunnel <pod-name> --force --grace-period=0
+   ```
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="IstioCNI" icon="network-wired" href="/concepts/istiocni-resource">
+    Required CNI component for ambient mesh
+  </Card>
+  <Card title="Istio Resource" icon="ship" href="/concepts/istio-resource">
+    Configure control plane for ambient mode
+  </Card>
+  <Card title="Ambient Mode" icon="cloud" href="/deployment/ambient-mode">
+    Complete ambient mesh deployment guide
+  </Card>
+  <Card title="API Reference" icon="book" href="/api/ztunnel">
+    Complete API documentation
+  </Card>
+</CardGroup>

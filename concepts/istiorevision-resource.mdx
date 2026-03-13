@@ -1,0 +1,537 @@
+---
+title: IstioRevision Resource
+description: Low-level resource representing a specific Istio control plane revision
+---
+
+## Overview
+
+The `IstioRevision` resource represents a single deployed instance of an Istio control plane with a specific version and revision name. It is a cluster-scoped resource that is typically created and managed automatically by the Sail Operator, not by users directly.
+
+<Warning>
+  Users should normally create `Istio` resources, not `IstioRevision` resources. The operator manages `IstioRevision` resources automatically.
+</Warning>
+
+## Purpose and Design
+
+The `IstioRevision` resource serves as the low-level implementation detail of Istio control plane deployments:
+
+- **Direct Control Plane Mapping**: Each `IstioRevision` corresponds 1:1 with a deployed control plane
+- **Revision-based Workload Injection**: The resource name becomes the revision name used for sidecar injection
+- **Version Isolation**: Multiple revisions can coexist, enabling canary upgrades
+- **Operator-managed Lifecycle**: Created and deleted by the operator based on `Istio` resource state
+
+<Info>
+  Think of `IstioRevision` as analogous to Kubernetes `ReplicaSet` — it's the concrete instance that the higher-level `Istio` resource (like `Deployment`) manages.
+</Info>
+
+## Basic Example
+
+While not typically created manually, here's what an `IstioRevision` looks like:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioRevision
+metadata:
+  name: default-v1-29-1
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    revision: default-v1-29-1
+```
+
+## Spec Fields
+
+The `IstioRevision` spec is very similar to the `Istio` spec but simpler:
+
+### version
+
+<ParamField path="spec.version" type="string" required>
+  The Istio version to install. Must be one of the supported versions.
+  
+  **Format**: Exact version only (e.g., `v1.29.1`), no `-latest` suffix
+  
+  **Note**: Unlike `Istio` resources, `IstioRevision` requires an exact version.
+</ParamField>
+
+### namespace
+
+<ParamField path="spec.namespace" type="string" required>
+  The namespace where control plane components will be installed.
+  
+  **Immutable**: Cannot be changed after creation.
+  
+  **Validation**: Must match `spec.values.global.istioNamespace`.
+</ParamField>
+
+### values
+
+<ParamField path="spec.values" type="object">
+  Helm values to pass to the Istio charts.
+  
+  **Important**: For named revisions (not `default`), `spec.values.revision` must match `metadata.name`.
+</ParamField>
+
+## Status Fields
+
+The `IstioRevision` status provides detailed information about the control plane state:
+
+### observedGeneration
+
+<ResponseField name="status.observedGeneration" type="integer">
+  The most recent generation observed by the controller.
+</ResponseField>
+
+### state
+
+<ResponseField name="status.state" type="string">
+  A high-level summary of the revision state.
+  
+  **Possible values**:
+  - `Healthy` - Control plane fully reconciled and ready
+  - `ReconcileError` - Reconciliation failed
+  - `IstiodNotReady` - Control plane reconciled but istiod not ready
+  - `RemoteIstiodNotReady` - Remote istiod not ready (for remote profile)
+  - `ReadinessCheckFailed` - Cannot determine readiness
+  - `UsageCheckFailed` - Cannot determine if in use
+  - `IstioCNINotFound` - Required CNI dependency not found
+  - `IstioCNINotHealthy` - Required CNI dependency not healthy
+  - `ZTunnelNotFound` - Required ZTunnel dependency not found
+  - `ZTunnelNotHealthy` - Required ZTunnel dependency not healthy
+  - `NameAlreadyExists` - An IstioRevisionTag with the same name exists
+</ResponseField>
+
+### conditions
+
+<ResponseField name="status.conditions" type="array">
+  Detailed conditions about the revision state.
+  
+  **Condition Types**:
+  
+  - `Reconciled` - Whether reconciliation succeeded
+  - `Ready` - Whether control plane is ready
+  - `InUse` - Whether workloads are using this revision
+  - `DependenciesHealthy` - Whether dependencies are healthy
+</ResponseField>
+
+## Revision Naming
+
+The name of an `IstioRevision` resource is significant:
+
+### Default Revision
+
+A revision named `default` is special:
+
+- Workloads can use the `istio-injection=enabled` label
+- The `spec.values.revision` field should be empty or omitted
+- Used by the `InPlace` update strategy
+
+```yaml
+metadata:
+  name: default
+spec:
+  values:
+    revision: ""  # Empty for default revision
+```
+
+### Named Revisions
+
+Non-default revisions must specify the revision in values:
+
+```yaml
+metadata:
+  name: prod-v1-29-1
+spec:
+  values:
+    revision: prod-v1-29-1  # Must match metadata.name
+```
+
+This is enforced by a validation rule:
+
+```yaml
+rule: "self.metadata.name == 'default' ? (!has(self.spec.values.revision) || size(self.spec.values.revision) == 0) : self.spec.values.revision == self.metadata.name"
+message: "spec.values.revision must match metadata.name or be empty when the name is 'default'"
+```
+
+## Workload Association
+
+Workloads select an `IstioRevision` using the `istio.io/rev` label:
+
+### Namespace-level Injection
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: my-app
+  labels:
+    istio.io/rev: prod-v1-29-1
+```
+
+All pods in this namespace will use the `prod-v1-29-1` revision.
+
+### Pod-level Injection
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+  labels:
+    istio.io/rev: prod-v1-29-1
+spec:
+  # ...
+```
+
+### Default Revision
+
+For the `default` revision, you can use either:
+
+```yaml
+labels:
+  istio.io/rev: default
+```
+
+Or the legacy label:
+
+```yaml
+labels:
+  istio-injection: enabled
+```
+
+## Status Conditions in Detail
+
+### Reconciled Condition
+
+Indicates whether all child resources have been created/updated:
+
+```yaml
+conditions:
+- type: Reconciled
+  status: "True"
+  reason: Healthy
+  message: "All resources reconciled successfully"
+  lastTransitionTime: "2024-03-13T10:00:00Z"
+```
+
+**Reasons**:
+- `Healthy` - Reconciliation successful
+- `ReconcileError` - Reconciliation failed (will retry)
+
+### Ready Condition
+
+Indicates whether istiod is ready to handle traffic:
+
+```yaml
+conditions:
+- type: Ready
+  status: "True"
+  reason: Healthy
+  message: "Control plane is ready"
+  lastTransitionTime: "2024-03-13T10:01:00Z"
+```
+
+**Reasons**:
+- `Healthy` - Control plane ready
+- `IstiodNotReady` - istiod not ready
+- `RemoteIstiodNotReady` - Remote istiod not ready
+- `ReadinessCheckFailed` - Cannot determine readiness
+
+### InUse Condition
+
+Indicates whether any workloads are using this revision:
+
+```yaml
+conditions:
+- type: InUse
+  status: "True"
+  reason: ReferencedByWorkloads
+  message: "Referenced by 5 workloads in 3 namespaces"
+  lastTransitionTime: "2024-03-13T10:00:00Z"
+```
+
+**Reasons**:
+- `ReferencedByWorkloads` - In use by workloads
+- `NotReferencedByAnything` - Not in use
+- `UsageCheckFailed` - Cannot determine usage
+
+<Info>
+  The `InUse` condition is critical for the `RevisionBased` update strategy. The operator uses it to determine when old revisions can be safely deleted.
+</Info>
+
+### DependenciesHealthy Condition
+
+Indicates whether required dependencies are healthy:
+
+```yaml
+conditions:
+- type: DependenciesHealthy
+  status: "True"
+  reason: Healthy
+  message: "All dependencies are healthy"
+  lastTransitionTime: "2024-03-13T10:00:00Z"
+```
+
+**Reasons**:
+- `Healthy` - All dependencies healthy
+- `IstioCNINotFound` - IstioCNI resource not found
+- `IstioCNINotHealthy` - IstioCNI not ready
+- `ZTunnelNotFound` - ZTunnel resource not found
+- `ZTunnelNotHealthy` - ZTunnel not ready
+- `DependencyCheckFailed` - Cannot check dependencies
+
+## Examples
+
+### Viewing IstioRevisions
+
+List all revisions:
+
+```bash
+kubectl get istiorevision
+```
+
+Output:
+```
+NAME              NAMESPACE       READY   STATUS    IN USE   VERSION    AGE
+default-v1-29-1   istio-system    True    Healthy   True     v1.29.1    10m
+default-v1-28-5   istio-system    True    Healthy   False    v1.28.5    2h
+```
+
+### Checking Revision Status
+
+Get detailed status:
+
+```bash
+kubectl get istiorevision default-v1-29-1 -o yaml
+```
+
+### Finding Active Workloads
+
+Find namespaces using a revision:
+
+```bash
+kubectl get namespaces -l istio.io/rev=default-v1-29-1
+```
+
+Find pods using a revision:
+
+```bash
+kubectl get pods -A -l istio.io/rev=default-v1-29-1
+```
+
+### Manual Creation (Advanced)
+
+In advanced scenarios, you might create an `IstioRevision` manually:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioRevision
+metadata:
+  name: experimental
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    revision: experimental
+    pilot:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 1024Mi
+```
+
+<Warning>
+  Manual creation of `IstioRevision` resources is not recommended. Use the `Istio` resource with `RevisionBased` update strategy instead.
+</Warning>
+
+## Lifecycle Management
+
+### Creation by Istio Resource
+
+When an `Istio` resource is created, the operator:
+
+1. Determines the revision name based on update strategy
+2. Copies spec fields from `Istio` to `IstioRevision`
+3. Sets owner references for garbage collection
+4. Creates the `IstioRevision` resource
+
+### Update Behavior
+
+**InPlace Strategy**:
+- The single `IstioRevision` is updated in place
+- Name remains constant (usually `default`)
+- Control plane components are replaced
+
+**RevisionBased Strategy**:
+- New `IstioRevision` created with version-based name
+- Old `IstioRevision` remains until not in use
+- Deleted after grace period expires
+
+### Deletion
+
+An `IstioRevision` is deleted when:
+
+1. The parent `Istio` resource is deleted (via owner reference)
+2. For `RevisionBased` strategy: the revision is no longer in use and grace period has expired
+3. Manual deletion (not recommended)
+
+<Info>
+  The operator uses finalizers to ensure proper cleanup order and prevent premature deletion of in-use revisions.
+</Info>
+
+## Validation Rules
+
+The `IstioRevision` resource includes strict validation:
+
+<AccordionGroup>
+  <Accordion title="Revision Name Consistency">
+    For non-default revisions, the revision value must match the resource name:
+    
+    ```yaml
+    rule: "self.metadata.name == 'default' ? (!has(self.spec.values.revision) || size(self.spec.values.revision) == 0) : self.spec.values.revision == self.metadata.name"
+    ```
+  </Accordion>
+  
+  <Accordion title="Namespace Consistency">
+    The `spec.values.global.istioNamespace` must match `spec.namespace`:
+    
+    ```yaml
+    rule: "self.values.global.istioNamespace == self.__namespace__"
+    ```
+  </Accordion>
+  
+  <Accordion title="Namespace Immutability">
+    The namespace cannot be changed after creation:
+    
+    ```yaml
+    rule: "self == oldSelf"
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Comparison: Istio vs IstioRevision
+
+| Aspect | Istio | IstioRevision |
+|--------|-------|---------------|
+| **Purpose** | User-facing control plane API | Concrete control plane instance |
+| **Creation** | Created by users | Created by operator |
+| **Lifecycle** | Persistent (until user deletes) | May be ephemeral (RevisionBased) |
+| **Version** | Can use `-latest` suffix | Exact version only |
+| **Update Strategy** | Has updateStrategy field | No update strategy |
+| **Revision Name** | Generated by operator | Resource name IS revision name |
+| **Analogous to** | Kubernetes Deployment | Kubernetes ReplicaSet |
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Don't Create Manually">
+    Let the operator manage `IstioRevision` resources:
+    
+    ✅ Do:
+    ```yaml
+    apiVersion: sailoperator.io/v1
+    kind: Istio
+    metadata:
+      name: default
+    spec:
+      version: v1.29.1
+      updateStrategy:
+        type: RevisionBased
+    ```
+    
+    ❌ Don't:
+    ```yaml
+    apiVersion: sailoperator.io/v1
+    kind: IstioRevision  # Don't create directly
+    ```
+  </Accordion>
+  
+  <Accordion title="Monitor InUse Condition">
+    Before deleting a revision, check that it's not in use:
+    
+    ```bash
+    kubectl get istiorevision old-revision -o jsonpath='{.status.conditions[?(@.type=="InUse")].status}'
+    ```
+  </Accordion>
+  
+  <Accordion title="Use IstioRevisionTag for Stable Names">
+    Instead of referencing `IstioRevision` directly, use `IstioRevisionTag`:
+    
+    ```yaml
+    labels:
+      istio.io/rev: prod  # Points to IstioRevisionTag
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+### Revision Not Becoming Ready
+
+1. Check the conditions:
+   ```bash
+   kubectl describe istiorevision <name>
+   ```
+
+2. Check istiod deployment:
+   ```bash
+   kubectl get deploy -n istio-system -l istio.io/rev=<name>
+   ```
+
+3. Check istiod logs:
+   ```bash
+   kubectl logs -n istio-system -l istio.io/rev=<name>
+   ```
+
+### Revision Stuck in Deletion
+
+1. Check if still in use:
+   ```bash
+   kubectl get istiorevision <name> -o jsonpath='{.status.conditions[?(@.type=="InUse")]}'
+   ```
+
+2. Find workloads using it:
+   ```bash
+   kubectl get namespaces -l istio.io/rev=<name>
+   kubectl get pods -A -l istio.io/rev=<name>
+   ```
+
+3. Check for finalizers:
+   ```bash
+   kubectl get istiorevision <name> -o jsonpath='{.metadata.finalizers}'
+   ```
+
+### Name Validation Errors
+
+If you see validation errors about revision name mismatch:
+
+```
+Error: spec.values.revision must match metadata.name
+```
+
+Ensure consistency:
+
+```yaml
+metadata:
+  name: my-revision
+spec:
+  values:
+    revision: my-revision  # Must match!
+```
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Istio Resource" icon="ship" href="/concepts/istio-resource">
+    The higher-level control plane API
+  </Card>
+  <Card title="IstioRevisionTag" icon="tag" href="/concepts/istiorevisiontag-resource">
+    Create stable aliases for revisions
+  </Card>
+  <Card title="Update Strategies" icon="rotate" href="/configuration/update-strategies">
+    How revisions are managed during updates
+  </Card>
+  <Card title="API Reference" icon="book" href="/api/istiorevision">
+    Complete API documentation
+  </Card>
+</CardGroup>

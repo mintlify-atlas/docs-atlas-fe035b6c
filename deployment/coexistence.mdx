@@ -1,0 +1,638 @@
+---
+title: Sidecar and Ambient Coexistence
+description: Run sidecar and ambient deployment modes together in the same mesh
+---
+
+Sail Operator supports running sidecar pods and ambient pods together within the same mesh. This enables gradual migration from sidecar to ambient mode or running both modes simultaneously for different workload requirements.
+
+## Overview
+
+Coexistence allows you to:
+
+- **Gradually migrate** from sidecar to ambient mode namespace by namespace
+- **Mix deployment modes** based on workload requirements
+- **Maintain connectivity** between sidecar and ambient workloads
+- **Preserve policies** during migration with minimal disruption
+
+<Warning>
+While basic connectivity and Layer 4 features work seamlessly, there are significant limitations for Layer 7 capabilities in hybrid deployments. Review the [limitations section](#limitations-and-unsupported-use-cases) carefully.
+</Warning>
+
+## Compatibility Status
+
+<Note>
+The information in this document applies to Istio version 1.27.x and later. Coexistence support is still evolving. Check [Istio's coexistence documentation](https://github.com/istio/istio/issues/57213) for the latest updates.
+</Note>
+
+## Requirements for Coexistence
+
+To run sidecar and ambient modes together:
+
+### 1. Deploy Istio with Ambient Profile
+
+The mesh must be configured with the `ambient` profile:
+
+```yaml istio-ambient.yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient  # Required for coexistence
+  updateStrategy:
+    type: InPlace
+  values:
+    pilot:
+      trustedZtunnelNamespace: ztunnel
+    meshConfig:
+      discoverySelectors:
+        - matchLabels:
+            istio-discovery: enabled
+```
+
+### 2. Enable HBONE in Sidecars
+
+All sidecars in the hybrid mesh must be HBONE-aware to communicate with ambient workloads.
+
+<Info>
+HBONE (HTTP-Based Overlay Network Environment) is the protocol ambient mode uses for secure communication.
+</Info>
+
+Restart existing sidecar pods after upgrading the control plane:
+
+```bash
+# Restart all deployments in a namespace
+kubectl rollout restart deployment -n <sidecar-namespace>
+
+# Verify HBONE is enabled
+kubectl get pod <pod-name> -n <namespace> -o yaml | \
+  yq '.spec.containers[] | select(.name=="istio-proxy") | .env[] | select(.name=="PROXY_CONFIG")'
+```
+
+Expected output:
+
+```yaml
+name: PROXY_CONFIG
+value: |
+  {"proxyMetadata":{"ISTIO_META_ENABLE_HBONE":"true"},"image":{"imageType":"distroless"}}
+```
+
+### 3. Deploy Required Ambient Components
+
+Ensure IstioCNI and ZTunnel are deployed:
+
+```yaml istiocni-sample.yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+```
+
+```yaml ztunnel-sample.yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+```
+
+## Supported Use Cases
+
+The following features work reliably in coexistence mode:
+
+### Basic Connectivity
+
+<Card title="East-West Communication" icon="arrows-left-right">
+  Pods in sidecar mode can communicate with those in ambient mode, and vice versa. Traffic flows transparently between both deployment models.
+</Card>
+
+Example traffic flows:
+
+```
+Sidecar Pod → Sidecar Proxy → ZTunnel → Ambient Pod
+Ambient Pod → ZTunnel → Sidecar Proxy → Sidecar Pod
+```
+
+### Layer 4 Security
+
+#### Mutual TLS (mTLS)
+
+Automatic protocol negotiation:
+
+- **Sidecar to Ambient**: Sidecar detects HBONE endpoint and uses HBONE protocol
+- **Ambient to Sidecar**: ZTunnel uses HBONE to communicate with sidecar proxy
+- All traffic is encrypted with mTLS regardless of mode
+
+#### Layer 4 Authentication and Authorization
+
+L4 policies work consistently across both modes:
+
+```yaml l4-peer-auth.yaml
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  mtls:
+    mode: STRICT
+```
+
+This policy allows traffic from both sidecar and ambient pods.
+
+```yaml l4-authz.yaml
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: ratings-authz
+  namespace: bookinfo
+spec:
+  selector:
+    matchLabels:
+      app: ratings
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/bookinfo/sa/bookinfo-reviews
+    to:
+    - operation:
+        ports: ["9080"]
+```
+
+This works for both sidecar and ambient workloads.
+
+### Gateways
+
+#### Ingress Gateways
+
+Ingress gateways in non-ambient namespaces can expose services in both modes:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: bookinfo-gateway
+  namespace: bookinfo
+spec:
+  gatewayClassName: istio
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+```
+
+<Note>
+By default, traffic from ingress gateways to ambient services does not traverse waypoints. Apply the `istio.io/ingress-use-waypoint: "true"` label to enable waypoint processing.
+</Note>
+
+#### Egress Gateways
+
+Ambient pods can route through Istio egress gateways:
+
+```yaml egress-gateway.yaml
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+spec:
+  components:
+    egressGateways:
+    - name: istio-egressgateway
+      enabled: true
+```
+
+### Layer 4 Observability
+
+Basic TCP metrics are available:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  values:
+    meshConfig:
+      defaultConfig:
+        proxyStatsMatcher:
+          inclusionRegexps:
+          - ".*upstream_cx_.*"
+          - ".*downstream_cx_.*"
+```
+
+<Info>
+Only L4 TCP metrics are fully supported. HTTP metrics may be incomplete in hybrid scenarios.
+</Info>
+
+## Limitations and Unsupported Use Cases
+
+The major limitations involve Layer 7 features when traffic crosses deployment modes:
+
+### Layer 7 Policy Enforcement
+
+<Warning>
+This is the most significant limitation in coexistence mode.
+</Warning>
+
+#### Problem: Waypoint Bypass from Sidecars
+
+Currently, sidecar proxies have **limited support** for communicating with waypoint proxies. When a sidecar pod sends traffic to an ambient pod with a waypoint:
+
+- ✅ Traffic reaches the destination
+- ❌ Traffic **bypasses** the waypoint proxy
+- ❌ Layer 7 authorization policies are **not enforced**
+- ✅ Only Layer 4 policies are applied
+- ❌ Routing decisions are made by client-side sidecar, not the waypoint
+
+Traffic flow:
+
+```
+Sidecar Pod → Sidecar Proxy → ZTunnel → Ambient Pod
+                                  ↓
+                            Waypoint bypassed ❌
+```
+
+#### What Works: Ambient to Sidecar
+
+Ambient pods **can** communicate with sidecar pods through waypoints:
+
+```
+Ambient Pod → ZTunnel → Waypoint ✅ → Sidecar Proxy → Sidecar Pod
+```
+
+L7 policies are enforced in this direction.
+
+### Affected Features (Sidecar to Ambient with Waypoint)
+
+- ❌ HTTP-based authorization policies (methods, paths, headers)
+- ❌ HTTPRoute traffic splitting when initiated from sidecars
+- ❌ Request authentication (JWT validation)
+- ❌ L7 metrics and tracing for cross-mode traffic
+- ❌ Fault injection and retries
+
+### Example of the Limitation
+
+```yaml reviews-l7-policy.yaml
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: reviews-waypoint
+  namespace: bookinfo
+spec:
+  targetRefs:
+  - kind: Service
+    group: ""
+    name: reviews  # Reviews is in ambient mode with waypoint
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/bookinfo/sa/bookinfo-productpage
+    to:
+    - operation:
+        methods: ["GET"]  # L7 policy
+```
+
+If `productpage` is in **sidecar mode** and `reviews` is in **ambient mode** with a waypoint:
+
+- The L7 method restriction will **not** be enforced
+- Only L4 principal-based authorization will work
+- Traffic will bypass the waypoint
+
+<Warning>
+Until waypoint bypass is resolved, avoid placing L7 policies on ambient services that receive traffic from sidecar workloads.
+</Warning>
+
+## Best Practices
+
+When running both modes together:
+
+### 1. Use Separate Namespaces
+
+<Card title="Namespace Isolation" icon="layer-group">
+  Deploy sidecar and ambient workloads in separate namespaces to avoid configuration conflicts and simplify troubleshooting.
+</Card>
+
+```bash
+# Sidecar namespace
+kubectl label namespace app-sidecar istio.io/rev=default
+
+# Ambient namespace
+kubectl label namespace app-ambient istio.io/dataplane-mode=ambient
+```
+
+### 2. Avoid Mixed Labeling
+
+<Warning>
+Do not apply both sidecar injection and ambient labels to the same namespace or pod.
+</Warning>
+
+If both labels are present, sidecar injection takes precedence:
+
+```bash
+# ❌ Don't do this
+kubectl label namespace bookinfo istio.io/rev=default
+kubectl label namespace bookinfo istio.io/dataplane-mode=ambient
+
+# The namespace will use sidecar mode
+```
+
+### 3. Plan L7 Policies Carefully
+
+Given waypoint bypass limitations:
+
+- **Option A**: Deploy critical services in sidecar mode if they require L7 policies from multiple sources
+- **Option B**: Keep sidecar and ambient services segregated with L4-only policies between them
+- **Option C**: Place all services requiring L7 features in ambient mode to avoid cross-mode L7 traffic
+
+### 4. Migration Strategy
+
+For gradual migration from sidecar to ambient:
+
+```bash
+# Phase 1: Deploy ambient infrastructure
+kubectl apply -f istio-ambient.yaml
+kubectl apply -f istiocni.yaml
+kubectl apply -f ztunnel.yaml
+
+# Phase 2: Enable HBONE in all sidecars
+kubectl rollout restart deployment -n sidecar-namespace
+
+# Phase 3: Migrate namespaces one at a time
+kubectl label namespace app1 istio.io/dataplane-mode=ambient
+kubectl label namespace app1 istio.io/rev-  # Remove sidecar injection
+kubectl rollout restart deployment -n app1
+
+# Phase 4: Validate and migrate next namespace
+kubectl label namespace app2 istio.io/dataplane-mode=ambient
+kubectl label namespace app2 istio.io/rev-
+kubectl rollout restart deployment -n app2
+```
+
+### 5. Monitor Cross-Mode Traffic
+
+Use observability tools to track traffic patterns:
+
+```bash
+# View ztunnel logs for ambient traffic
+kubectl logs -n ztunnel -l app=ztunnel | grep -E "inbound|outbound"
+
+# Check sidecar proxy logs
+kubectl logs <sidecar-pod> -n <namespace> -c istio-proxy | tail -100
+```
+
+## Configuration Examples
+
+### Coexistence Deployment
+
+```yaml istio-coexistence.yaml
+# Control plane with ambient profile
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  updateStrategy:
+    type: InPlace
+  values:
+    pilot:
+      trustedZtunnelNamespace: ztunnel
+    meshConfig:
+      discoverySelectors:
+        - matchLabels:
+            istio-discovery: enabled
+---
+# IstioCNI for ambient support
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+---
+# ZTunnel for ambient mode
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+```
+
+### Namespace Labeling
+
+```bash
+# Label namespaces for discovery
+kubectl label namespace istio-system istio-discovery=enabled
+kubectl label namespace ztunnel istio-discovery=enabled
+
+# Sidecar namespace
+kubectl create namespace bookinfo-sidecar
+kubectl label namespace bookinfo-sidecar istio-discovery=enabled
+kubectl label namespace bookinfo-sidecar istio.io/rev=default
+
+# Ambient namespace
+kubectl create namespace bookinfo-ambient
+kubectl label namespace bookinfo-ambient istio-discovery=enabled
+kubectl label namespace bookinfo-ambient istio.io/dataplane-mode=ambient
+```
+
+### L4-Only Policies for Cross-Mode Traffic
+
+```yaml cross-mode-l4-policy.yaml
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: reviews-l4-only
+  namespace: bookinfo-ambient
+spec:
+  selector:
+    matchLabels:
+      app: reviews
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/bookinfo-sidecar/sa/bookinfo-productpage
+        - cluster.local/ns/bookinfo-ambient/sa/bookinfo-productpage
+    to:
+    - operation:
+        ports: ["9080"]  # L4 only - no methods or paths
+```
+
+## Verification
+
+### Check Deployment Modes
+
+```bash
+# List namespaces with their modes
+kubectl get namespaces --show-labels | grep -E "istio.io/rev|dataplane-mode"
+```
+
+Expected output:
+
+```
+bookinfo-sidecar    Active   10m   istio.io/rev=default
+bookinfo-ambient    Active   10m   istio.io/dataplane-mode=ambient
+```
+
+### Verify HBONE in Sidecars
+
+```bash
+for pod in $(kubectl get pods -n bookinfo-sidecar -o name); do
+  echo "Checking $pod"
+  kubectl get $pod -n bookinfo-sidecar -o yaml | \
+    grep -A 2 "ISTIO_META_ENABLE_HBONE"
+done
+```
+
+### Test Connectivity
+
+From sidecar to ambient:
+
+```bash
+kubectl exec -n bookinfo-sidecar <sidecar-pod> -c <app-container> -- \
+  curl http://reviews.bookinfo-ambient:9080/reviews/1
+```
+
+From ambient to sidecar:
+
+```bash
+kubectl exec -n bookinfo-ambient <ambient-pod> -- \
+  curl http://productpage.bookinfo-sidecar:9080/productpage
+```
+
+### Verify mTLS
+
+Check ztunnel logs:
+
+```bash
+kubectl logs -n ztunnel -l app=ztunnel --tail=50 | grep -E "src.identity|dst.identity"
+```
+
+Expected output showing SPIFFE identities:
+
+```
+src.identity="spiffe://cluster.local/ns/bookinfo-sidecar/sa/bookinfo-productpage"
+dst.identity="spiffe://cluster.local/ns/bookinfo-ambient/sa/bookinfo-reviews"
+```
+
+## Troubleshooting
+
+### Sidecar Can't Reach Ambient Workload
+
+Check HBONE support:
+
+```bash
+kubectl get pod <sidecar-pod> -n <namespace> -o yaml | grep HBONE
+```
+
+If not present, restart the pod:
+
+```bash
+kubectl rollout restart deployment <deployment-name> -n <namespace>
+```
+
+### L7 Policies Not Working Cross-Mode
+
+<Warning>
+This is expected behavior. See [Layer 7 Policy Enforcement](#layer-7-policy-enforcement) limitations.
+</Warning>
+
+Workaround: Use L4-only policies for cross-mode traffic:
+
+```yaml
+spec:
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/app/sa/app-sa"]
+    to:
+    - operation:
+        ports: ["8080"]  # Don't specify methods or paths
+```
+
+### Ambient Workload Can't Use Waypoint
+
+Verify waypoint configuration:
+
+```bash
+# Check waypoint label
+kubectl get namespace <namespace> --show-labels | grep use-waypoint
+
+# Check waypoint status
+kubectl get gateway waypoint -n <namespace>
+kubectl get pods -n <namespace> -l gateway.networking.k8s.io/gateway-name=waypoint
+```
+
+## Migration from Sidecar to Ambient
+
+For a detailed step-by-step migration guide, see:
+
+<Card title="Sidecar to Ambient Migration" icon="right-left" href="/deployment/coexistence">
+  Complete guide for migrating existing sidecar deployments to ambient mode with zero downtime.
+</Card>
+
+## Future Improvements
+
+Coexistence support is actively being improved. Track progress:
+
+- [Istio Issue #57213](https://github.com/istio/istio/issues/57213) - Support sidecar and ambient coexistence
+- [Istio Ambient Docs](https://istio.io/latest/docs/ambient/usage/add-workloads/) - Add workloads to the mesh
+
+<Info>
+Full L7 policy enforcement for sidecar-to-waypoint communication is planned for future Istio releases.
+</Info>
+
+## Comparison Table
+
+| Feature | Sidecar to Sidecar | Ambient to Ambient | Sidecar to Ambient | Ambient to Sidecar |
+|---------|-------------------|-------------------|-------------------|-------------------|
+| **Basic connectivity** | ✅ Full | ✅ Full | ✅ Full | ✅ Full |
+| **mTLS encryption** | ✅ Full | ✅ Full | ✅ Full | ✅ Full |
+| **L4 authorization** | ✅ Full | ✅ Full | ✅ Full | ✅ Full |
+| **L7 authorization** | ✅ Full | ✅ Full (with waypoint) | ❌ Limited (bypasses waypoint) | ✅ Full (with waypoint) |
+| **HTTPRoute routing** | ✅ Full | ✅ Full (with waypoint) | ❌ Limited | ✅ Full (with waypoint) |
+| **HTTP metrics** | ✅ Full | ✅ Full (with waypoint) | ⚠️ Basic only | ✅ Full (with waypoint) |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Ambient Mode" icon="cloud" href="/deployment/ambient-mode">
+    Learn more about ambient architecture
+  </Card>
+  <Card title="Sidecar Mode" icon="box" href="/deployment/sidecar-mode">
+    Understand sidecar deployment
+  </Card>
+  <Card title="Migration Guide" icon="right-left" href="/deployment/coexistence">
+    Migrate from sidecar to ambient
+  </Card>
+  <Card title="Update Strategies" icon="arrow-up" href="/configuration/update-strategies">
+    Manage control plane upgrades
+  </Card>
+</CardGroup>
+
+## Additional Resources
+
+- [Istio Coexistence Issue](https://github.com/istio/istio/issues/57213)
+- [Istio Ambient Mode Documentation](https://istio.io/latest/docs/ambient/)
+- [Sail Operator Installation](/installation)

@@ -1,0 +1,346 @@
+---
+title: Certificate Management
+description: Manage CA certificates and perform zero-downtime certificate rotation in Istio
+---
+
+Istio uses certificates for mutual TLS (mTLS) authentication between services. By default, Istio CA generates self-signed certificates, but production deployments should use custom certificates from a trusted CA.
+
+## Default Certificate Behavior
+
+By default, the Istio CA generates a self-signed root certificate and key, then uses them to sign workload certificates. While this works out of the box, **having the root CA's private key in the cluster is not recommended for production**.
+
+## Plug in Custom CA Certificates
+
+You can provide custom certificates by creating a `cacerts` secret in the Istio namespace.
+
+### Basic Certificate Installation
+
+Create the `cacerts` secret with your certificates:
+
+```bash
+kubectl create secret generic cacerts -n istio-system \
+    --from-file=ca-cert.pem \
+    --from-file=ca-key.pem \
+    --from-file=root-cert.pem \
+    --from-file=cert-chain.pem
+```
+
+Restart istiod to pick up the new certificates:
+
+```bash
+kubectl rollout restart deployment/istiod -n istio-system
+```
+
+<Warning>
+This basic approach causes traffic disruptions with strict mTLS enabled. For zero-downtime updates, follow the procedure below.
+</Warning>
+
+## Zero-Downtime Certificate Rotation
+
+Switching from Istio-generated certificates to custom certificates without downtime requires careful coordination to maintain the chain of trust.
+
+### Understanding the Problem
+
+When you simply replace the `cacerts` secret, workloads don't immediately pick up the change. There's a time window where:
+
+- Some workloads use certificates signed by the **old root CA**
+- Other workloads use certificates signed by the **new intermediate CA** (which is signed by a different root)
+
+During this window, mTLS communication breaks because workloads don't trust each other's certificates.
+
+### Solution: Multi-Root Support
+
+To achieve zero-downtime updates, ensure all workloads trust certificates signed by **both the old root and the new root** at any given time.
+
+### Prerequisites
+
+Before starting, verify current certificates:
+
+```bash
+# Check sleep workload certificate
+istioctl proxy-config secret deployment/sleep -n sleep -o json | \
+  jq -r '.dynamicActiveSecrets[1].secret.validationContext.trustedCa.inlineBytes' | \
+  base64 --decode | openssl x509 -text -noout
+
+# Check httpbin workload certificate  
+istioctl proxy-config secret deployment/httpbin -n httpbin -o json | \
+  jq -r '.dynamicActiveSecrets[1].secret.validationContext.trustedCa.inlineBytes' | \
+  base64 --decode | openssl x509 -text -noout
+```
+
+Both should show the same root certificate (Istio-generated self-signed).
+
+### Step 1: Enable Multi-Root Support
+
+Patch the Istio resource to enable multi-root mesh:
+
+```yaml istio-patch.yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+spec:
+  values:
+    pilot:
+      env:
+        ISTIO_MULTIROOT_MESH: "true"
+    meshConfig:
+      defaultConfig:
+        proxyMetadata:
+          PROXY_CONFIG_XDS_AGENT: "true"
+```
+
+Apply the patch:
+
+```bash
+kubectl patch Istio default -n istio-system --type='merge' --patch-file=istio-patch.yaml
+```
+
+<Note>
+- `ISTIO_MULTIROOT_MESH`: Enables istiod to serve multiple root certificates
+- `PROXY_CONFIG_XDS_AGENT`: Enables proxies to accept multiple root certificates
+</Note>
+
+### Step 2: Generate New Certificates
+
+Generate new root and intermediate certificates using a trusted CA. For testing, use Istio's tooling:
+
+```bash
+mkdir -p certs
+cd certs
+
+# Clone Istio repository if needed
+git clone https://github.com/istio/istio.git
+
+# Generate new root CA
+make -f istio/tools/certs/Makefile.selfsigned.mk root-ca
+
+# Generate new intermediate certificates
+make -f istio/tools/certs/Makefile.selfsigned.mk intermediate-cacerts
+```
+
+<Warning>
+In production, use your organization's trusted root CA to issue the intermediate certificate instead of generating self-signed certificates.
+</Warning>
+
+### Step 3: Create Combined Root Certificate
+
+Extract the old CA certificate and combine it with the new root:
+
+```bash
+# Extract old CA certificate and key from Istio-generated secret
+kubectl get secret istio-ca-secret -n istio-system \
+  -o jsonpath='{.data.ca-cert\.pem}' | base64 -d > ca-cert.pem
+kubectl get secret istio-ca-secret -n istio-system \
+  -o jsonpath='{.data.ca-key\.pem}' | base64 -d > ca-key.pem
+kubectl get secret istio-ca-secret -n istio-system \
+  -o jsonpath='{.data.ca-cert\.pem}' | base64 -d > cert-chain.pem
+
+# Create combined root certificate (old + new)
+kubectl get secret istio-ca-secret -n istio-system \
+  -o jsonpath='{.data.ca-cert\.pem}' | base64 -d > combined-root.pem
+cat root-cert.pem >> combined-root.pem
+```
+
+### Step 4: Create Intermediate Secret with Combined Roots
+
+Create the `cacerts` secret using:
+- **Old CA certificate and key** for signing (temporarily)
+- **Combined root certificate** for trust validation
+
+```bash
+kubectl create secret generic cacerts -n istio-system \
+    --from-file=ca-cert.pem \
+    --from-file=ca-key.pem \
+    --from-file=root-cert.pem=combined-root.pem \
+    --from-file=cert-chain.pem
+```
+
+Restart istiod:
+
+```bash
+kubectl rollout restart deployment/istiod -n istio-system
+```
+
+### Step 5: Verify Multi-Root Trust
+
+Verify workloads now trust both old and new roots:
+
+```bash
+istioctl proxy-config secret deployment/httpbin -n httpbin -o json | \
+  jq -r '.dynamicActiveSecrets[1].secret.validationContext.trustedCa.inlineBytes' | \
+  base64 --decode
+```
+
+You should see **two** certificates in the output:
+1. The old Istio-generated root
+2. The new root CA
+
+<Note>
+If you only see one certificate, restart the workload:
+```bash
+kubectl rollout restart deployment/httpbin -n httpbin
+```
+</Note>
+
+### Step 6: Switch to New Intermediate CA
+
+Update the combined root to include the new root twice (for triggering rotation):
+
+```bash
+cat root-cert.pem >> combined-root.pem
+```
+
+Update the `cacerts` secret to use the **new intermediate certificate** for signing:
+
+```bash
+kubectl delete secret cacerts -n istio-system --ignore-not-found
+kubectl create secret generic cacerts -n istio-system \
+    --from-file=intermediate/ca-cert.pem \
+    --from-file=intermediate/ca-key.pem \
+    --from-file=root-cert.pem=combined-root.pem \
+    --from-file=intermediate/cert-chain.pem
+```
+
+Restart istiod:
+
+```bash
+kubectl rollout restart deployment/istiod -n istio-system
+```
+
+<Tip>
+With multi-root support enabled, workload certificates rotate automatically without requiring pod restarts.
+</Tip>
+
+### Step 7: Verify Certificate Rotation
+
+Verify workloads are now using certificates issued by the new intermediate CA:
+
+```bash
+istioctl proxy-config secret deployment/httpbin -n httpbin -o json | \
+  jq -r '.dynamicActiveSecrets[0].secret.tlsCertificate.certificateChain.inlineBytes' | \
+  base64 -d | openssl x509 -text -noout
+```
+
+Look for the **Issuer** field:
+
+```
+Issuer: O=Istio, CN=Intermediate CA, L=intermediate
+```
+
+### Step 8: Remove Old Root Certificate
+
+After all workloads have rotated to the new certificates, remove the old root:
+
+```bash
+kubectl delete secret cacerts -n istio-system --ignore-not-found
+kubectl create secret generic cacerts -n istio-system \
+    --from-file=intermediate/ca-cert.pem \
+    --from-file=intermediate/ca-key.pem \
+    --from-file=root-cert.pem \
+    --from-file=intermediate/cert-chain.pem
+```
+
+Restart istiod:
+
+```bash
+kubectl rollout restart deployment/istiod -n istio-system
+```
+
+### Step 9: (Optional) Disable Multi-Root Support
+
+Once the migration is complete, you can optionally disable multi-root support:
+
+```bash
+kubectl patch Istio default -n istio-system --type='merge' -p '{
+  "spec": {
+    "values": {
+      "pilot": {
+        "env": {
+          "ISTIO_MULTIROOT_MESH": "false"
+        }
+      },
+      "meshConfig": {
+        "defaultConfig": {
+          "proxyMetadata": {
+            "PROXY_CONFIG_XDS_AGENT": "false"
+          }
+        }
+      }
+    }
+  }
+}'
+```
+
+<Warning>
+Keep multi-root support enabled if you plan to perform future certificate rotations without downtime.
+</Warning>
+
+## Certificate Rotation Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Plan Rotation Schedule" icon="calendar">
+    Rotate certificates before they expire. Typical certificate lifetimes are 1-3 years for root CAs and 90 days to 1 year for intermediates.
+  </Card>
+  
+  <Card title="Test in Non-Production" icon="flask">
+    Always test certificate rotation procedures in development or staging environments before executing in production.
+  </Card>
+  
+  <Card title="Monitor Certificate Expiry" icon="clock">
+    Set up alerts for certificate expiration at least 30 days in advance to allow time for rotation.
+  </Card>
+  
+  <Card title="Use Trusted CAs" icon="shield-check">
+    In production, use certificates from your organization's trusted root CA instead of self-signed certificates.
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### mTLS handshake failures after certificate update
+
+Verify all workloads trust the same root certificates:
+
+```bash
+for ns in $(kubectl get ns -o jsonpath='{.items[*].metadata.name}'); do
+  echo "Namespace: $ns"
+  kubectl get pods -n $ns -o name | while read pod; do
+    echo "  Pod: $pod"
+    kubectl exec $pod -n $ns -c istio-proxy -- \
+      openssl s_client -connect localhost:15000 -showcerts 2>/dev/null | \
+      openssl x509 -noout -subject -issuer 2>/dev/null || echo "    No proxy"
+  done
+done
+```
+
+### Workloads not picking up new certificates
+
+Restart workload deployments:
+
+```bash
+kubectl rollout restart deployment -n <namespace>
+```
+
+### Verify certificate chain
+
+Check the full certificate chain in the cacerts secret:
+
+```bash
+kubectl get secret cacerts -n istio-system -o jsonpath='{.data.cert-chain\.pem}' | \
+  base64 -d | openssl crl2pkcs7 -nocrl -certfile /dev/stdin | \
+  openssl pkcs7 -print_certs -noout
+```
+
+## Future Certificate Rotations
+
+Once you've established the new root CA, future rotations of the intermediate certificate are much simpler, as long as they're issued by the same root CA:
+
+1. Generate new intermediate certificate from the same root
+2. Update `cacerts` secret
+3. Restart istiod
+4. Workload certificates rotate automatically (with multi-root support)
+
+## Related Resources
+
+- [Monitoring](/operations/monitoring) - Monitor certificate expiration metrics
+- [Troubleshooting](/operations/troubleshooting) - Diagnose certificate issues
+- [Istio Certificate Management](https://istio.io/latest/docs/tasks/security/cert-management/plugin-ca-cert/)

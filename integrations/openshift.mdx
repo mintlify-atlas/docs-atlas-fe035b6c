@@ -1,0 +1,285 @@
+---
+title: OpenShift Integration
+description: Install and configure Sail Operator on OpenShift
+icon: openshift
+---
+
+The Sail Operator integrates seamlessly with OpenShift, providing native operator lifecycle management through the Operator Lifecycle Manager (OLM).
+
+## Installation Options
+
+You can install the Sail Operator on OpenShift using either the web console or the CLI.
+
+### Installing through the Web Console
+
+<Steps>
+  <Step title="Navigate to OperatorHub">
+    In the OpenShift Console, click **Operators** → **OperatorHub** in the left navigation pane.
+  </Step>
+  
+  <Step title="Search for Sail Operator">
+    Type "sail" in the search box to find the Sail Operator.
+  </Step>
+  
+  <Step title="Select and Install">
+    1. Click on the Sail Operator tile
+    2. When the community operator prompt appears, click **Continue**
+    3. Click **Install**
+  </Step>
+  
+  <Step title="Configure Installation">
+    Use the default installation settings and click **Install** to proceed.
+  </Step>
+  
+  <Step title="Verify Installation">
+    Navigate to **Operators** → **Installed Operators** and verify that `Succeeded` appears in the **Status** column for the Sail Operator.
+  </Step>
+</Steps>
+
+### Installing using the CLI
+
+<Note>
+  You must have access to the cluster with the `cluster-admin` cluster role.
+</Note>
+
+<Steps>
+  <Step title="Create the namespace">
+    Create the `openshift-operators` namespace if it doesn't already exist:
+    
+    ```bash
+    kubectl create namespace openshift-operators
+    ```
+  </Step>
+  
+  <Step title="Create the Subscription">
+    Apply the Subscription manifest with your desired channel:
+    
+    ```yaml
+    apiVersion: operators.coreos.com/v1alpha1
+    kind: Subscription
+    metadata:
+      name: sailoperator
+      namespace: openshift-operators
+    spec:
+      channel: "0.1-nightly"
+      installPlanApproval: Automatic
+      name: sailoperator
+      source: community-operators
+      sourceNamespace: openshift-marketplace
+    ```
+    
+    Apply the manifest:
+    
+    ```bash
+    kubectl apply -f subscription.yaml
+    ```
+  </Step>
+  
+  <Step title="Verify Installation">
+    Check the CSV status to confirm successful installation:
+    
+    ```bash
+    kubectl get csv -n openshift-operators
+    ```
+    
+    You should see output similar to:
+    
+    ```
+    NAME                                     DISPLAY         VERSION                    REPLACES                                 PHASE
+    sailoperator.v0.1.0-nightly-2024-06-25   Sail Operator   0.1.0-nightly-2024-06-25   sailoperator.v0.1.0-nightly-2024-06-21   Succeeded
+    ```
+    
+    The `Succeeded` status indicates successful installation.
+  </Step>
+</Steps>
+
+## OpenShift-Specific Features
+
+### Routes for Gateway Exposure
+
+On OpenShift, you can use Routes to expose Istio gateways externally:
+
+```bash
+# Expose the ingress gateway as a Route
+kubectl expose service istio-ingressgateway
+
+# Get the Route hostname
+HOST=$(kubectl get route istio-ingressgateway -o jsonpath='{.spec.host}')
+echo "Gateway available at: http://$HOST"
+```
+
+### CNI Requirements
+
+On OpenShift, the CNI plugin is required even for sidecar mode due to the restricted security context constraints. See the [CNI documentation](/api/istiocni) for details.
+
+## Migrating from Istio In-Cluster Operator
+
+<Warning>
+  The Istio in-cluster operator has been deprecated. If you're migrating from it to Sail Operator, you'll need to adjust your Kubernetes resources.
+</Warning>
+
+### Key Differences
+
+| Feature | In-Cluster Operator | Sail Operator |
+|---------|--------------------|--------------|
+| Version Management | Operator version = Istio version | Decoupled versions |
+| API Resource | `IstioOperator` | `Istio`, `IstioRevision` |
+| Configuration | `spec.values` | `spec.values` (same format) |
+| Component Management | `spec.components` | Direct values configuration |
+
+### Basic Migration Example
+
+Convert your IstioOperator configuration to Sail Operator format:
+
+<CodeGroup>
+
+```yaml IstioOperator (Before)
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+spec:
+  meshConfig:
+    accessLogFile: /dev/stdout
+  values:
+    pilot:
+      traceSampling: 0.1
+```
+
+```yaml Istio (After)
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    meshConfig:
+      accessLogFile: /dev/stdout
+    pilot:
+      traceSampling: 0.1
+```
+
+</CodeGroup>
+
+### Environment Variables
+
+<Warning>
+  In Sail Operator, all `.env` fields are `map[string]string`. Boolean and numeric values must be quoted as strings.
+</Warning>
+
+<CodeGroup>
+
+```yaml IstioOperator
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+spec:
+  values:
+    pilot:
+      env:
+        PILOT_ENABLE_STATUS: true
+```
+
+```yaml Istio
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    pilot:
+      env:
+        PILOT_ENABLE_STATUS: "true"  # Must be a string
+```
+
+</CodeGroup>
+
+### Automated Conversion Tool
+
+Use the configuration converter script to automate the migration:
+
+```bash
+# Basic conversion
+./tools/configuration-converter.sh /path/to/istio_config.yaml
+
+# With custom output, namespace, and version
+./tools/configuration-converter.sh \
+  /path/to/input.yaml \
+  /path/to/output.yaml \
+  -n custom-namespace \
+  -v v1.29.1
+```
+
+<Note>
+  The converter script is under development. Always verify the output carefully before applying it to your cluster.
+</Note>
+
+## Uninstalling from OpenShift
+
+<Steps>
+  <Step title="Delete Istio Resources">
+    Remove the Istio control plane:
+    
+    1. Navigate to **Operators** → **Installed Operators**
+    2. Click **Istio** in the **Provided APIs** column
+    3. Select the Options menu and click **Delete Istio**
+    4. Confirm the deletion
+  </Step>
+  
+  <Step title="Delete IstioCNI Resources">
+    If you deployed IstioCNI:
+    
+    1. Click **IstioCNI** in the **Provided APIs** column
+    2. Select the Options menu and click **Delete IstioCNI**
+    3. Confirm the deletion
+  </Step>
+  
+  <Step title="Uninstall the Operator">
+    Remove the Sail Operator:
+    
+    1. Navigate to **Operators** → **Installed Operators**
+    2. Find the Sail Operator and click the Options menu
+    3. Select **Uninstall Operator**
+    4. Confirm the uninstallation
+  </Step>
+  
+  <Step title="Clean Up Projects">
+    Delete the istio-system and istio-cni projects:
+    
+    1. Navigate to **Home** → **Projects**
+    2. For each project (istio-system, istio-cni):
+       - Click the Options menu
+       - Click **Delete Project**
+       - Enter the project name to confirm
+       - Click **Delete**
+  </Step>
+  
+  <Step title="Optional: Delete CRDs">
+    OLM leaves the decision to delete CRDs to users. If you want to remove all Istio CRDs:
+    
+    ```bash
+    kubectl get crds -oname | grep istio.io | xargs kubectl delete
+    ```
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Deploy Gateways" icon="door-open" href="/integrations/gateways">
+    Configure ingress and egress gateways for your mesh
+  </Card>
+  
+  <Card title="Configure CNI" icon="network-wired" href="/api/istiocni">
+    Set up the CNI plugin for OpenShift
+  </Card>
+  
+  <Card title="Observability" icon="chart-line" href="/integrations/observability">
+    Integrate with OpenShift monitoring stack
+  </Card>
+  
+  <Card title="Install Addons" icon="puzzle-piece" href="/integrations/addons">
+    Add Prometheus, Kiali, and other tools
+  </Card>
+</CardGroup>

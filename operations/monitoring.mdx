@@ -1,0 +1,420 @@
+---
+title: Monitoring
+description: Configure observability and monitoring for Istio using the Sail Operator
+---
+
+Monitoring Istio deployments managed by the Sail Operator involves collecting metrics, traces, and logs from both the control plane and data plane. This guide covers integration with OpenShift monitoring stack, distributed tracing, and Kiali.
+
+## Metrics Collection
+
+### OpenShift Monitoring Stack
+
+The easiest way to get production-grade metrics collection is to use OpenShift's user-workload monitoring stack.
+
+<Note>
+**Prerequisites:**
+- User Workload monitoring is [enabled](https://docs.openshift.com/container-platform/latest/observability/monitoring/enabling-monitoring-for-user-defined-projects.html)
+- Istio installed in `istio-system` namespace
+</Note>
+
+#### Monitor Istiod (Control Plane)
+
+Create a ServiceMonitor to scrape control plane metrics:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: istiod-monitor
+  namespace: istio-system
+spec:
+  targetLabels:
+  - app
+  selector:
+    matchLabels:
+      istio: pilot
+  endpoints:
+  - port: http-monitoring
+    interval: 30s
+```
+
+Apply the configuration:
+
+```bash
+kubectl apply -f istiod-servicemonitor.yaml
+```
+
+#### Monitor Istio Proxies (Data Plane)
+
+Create a PodMonitor to scrape metrics from istio-proxy containers. This resource must be created in **all namespaces** where sidecars are running:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: istio-proxies-monitor
+  namespace: istio-system
+spec:
+  selector:
+    matchExpressions:
+    - key: istio-prometheus-ignore
+      operator: DoesNotExist
+  podMetricsEndpoints:
+  - path: /stats/prometheus
+    interval: 30s
+    relabelings:
+    - action: keep
+      sourceLabels: ["__meta_kubernetes_pod_container_name"]
+      regex: "istio-proxy"
+    - action: keep
+      sourceLabels: ["__meta_kubernetes_pod_annotationpresent_prometheus_io_scrape"]
+    - action: replace
+      regex: (\d+);(([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4})
+      replacement: "[$2]:$1"
+      sourceLabels: ["__meta_kubernetes_pod_annotation_prometheus_io_port","__meta_kubernetes_pod_ip"]
+      targetLabel: "__address__"
+    - action: replace
+      regex: (\d+);((([0-9]+?)(\.|$)){4})
+      replacement: "$2:$1"
+      sourceLabels: ["__meta_kubernetes_pod_annotation_prometheus_io_port","__meta_kubernetes_pod_ip"]
+      targetLabel: "__address__"
+    - action: labeldrop
+      regex: "__meta_kubernetes_pod_label_(.+)"
+    - sourceLabels: ["__meta_kubernetes_namespace"]
+      action: replace
+      targetLabel: namespace
+    - sourceLabels: ["__meta_kubernetes_pod_name"]
+      action: replace
+      targetLabel: pod_name
+```
+
+Apply to all namespaces with sidecars:
+
+```bash
+kubectl apply -f istio-proxies-podmonitor.yaml -n istio-system
+kubectl apply -f istio-proxies-podmonitor.yaml -n <application-namespace>
+```
+
+#### Verify Metrics Collection
+
+After configuring the monitors, verify metrics are being collected:
+
+1. Open the OpenShift Console
+2. Navigate to **Observe → Metrics**
+3. Run a test query:
+
+```promql
+istio_requests_total
+```
+
+You should see request metrics from your control plane and data plane.
+
+### Key Metrics to Monitor
+
+<AccordionGroup>
+  <Accordion title="Control Plane Metrics">
+    - `pilot_xds_pushes` - Number of XDS configuration pushes
+    - `pilot_proxy_convergence_time` - Time for proxies to receive configuration
+    - `pilot_conflict_inbound_listener` - Configuration conflicts
+    - `pilot_total_xds_rejects` - Rejected XDS configurations
+    - `process_cpu_seconds_total` - CPU usage
+    - `process_resident_memory_bytes` - Memory usage
+  </Accordion>
+  
+  <Accordion title="Data Plane Metrics">
+    - `istio_requests_total` - Total HTTP requests
+    - `istio_request_duration_milliseconds` - Request latency
+    - `istio_request_bytes` - Request size
+    - `istio_response_bytes` - Response size
+    - `envoy_cluster_upstream_cx_active` - Active connections
+    - `envoy_cluster_upstream_cx_total` - Total connections
+  </Accordion>
+  
+  <Accordion title="Ambient Mode Metrics">
+    - `ztunnel_connection_count` - Active ZTunnel connections
+    - `ztunnel_xds_connection_state` - XDS connection status
+    - `envoy_server_memory_allocated` - ZTunnel memory usage
+  </Accordion>
+</AccordionGroup>
+
+## Distributed Tracing
+
+### OpenShift Distributed Tracing
+
+Configure Istio to send distributed traces to OpenTelemetry collectors and Tempo.
+
+<Note>
+**Prerequisites:**
+- Tempo stack installed and configured
+- OpenTelemetry collector configured in `istio-system` namespace
+- Istio instance created with `openshift` profile
+- IstioCNI instance created with `openshift` profile (if applicable)
+</Note>
+
+#### Enable Tracing in Istio
+
+Configure the Istio control plane with OpenTelemetry settings:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  values:
+    meshConfig:
+      enableTracing: true
+      extensionProviders:
+      - name: otel-tracing
+        opentelemetry:
+          port: 4317
+          service: otel-collector.istio-system.svc.cluster.local
+```
+
+Apply the configuration:
+
+```bash
+kubectl apply -f istio-tracing.yaml
+```
+
+#### Create Telemetry Resource
+
+Activate the OpenTelemetry tracer:
+
+```yaml
+apiVersion: telemetry.istio.io/v1
+kind: Telemetry
+metadata:
+  name: otel-demo
+  namespace: istio-system
+spec:
+  tracing:
+  - providers:
+    - name: otel-tracing
+    randomSamplingPercentage: 100
+```
+
+<Warning>
+`randomSamplingPercentage: 100` traces all requests. In production, reduce this to 1-5% to minimize overhead.
+</Warning>
+
+#### Verify Tracing
+
+1. Generate traffic to your services
+2. Get the Tempo query frontend route:
+
+```bash
+kubectl get routes -n tempo tempo-sample-query-frontend-tempo
+```
+
+3. Access the Tempo UI and search for traces
+
+## Kiali Integration
+
+Kiali provides a web-based UI for visualizing your service mesh topology, metrics, and traces.
+
+### Integrate with OpenShift Monitoring
+
+<Note>
+**Prerequisites:**
+- User Workload monitoring [enabled and configured](https://docs.openshift.com/container-platform/latest/observability/monitoring/enabling-monitoring-for-user-defined-projects.html)
+- Kiali Operator installed
+</Note>
+
+#### Grant Kiali Access to Metrics
+
+Create a ClusterRoleBinding:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kiali-monitoring-rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+subjects:
+- kind: ServiceAccount
+  name: kiali-service-account
+  namespace: istio-system
+```
+
+#### Get Istio Revision Name
+
+```bash
+kubectl get istiorevisions.sailoperator.io
+```
+
+Note the revision name (e.g., `default-v1-29-1`).
+
+#### Create Kiali Resource
+
+Replace `<revision-name>` with your actual revision name:
+
+```yaml
+apiVersion: kiali.io/v1alpha1
+kind: Kiali
+metadata:
+  name: kiali-user-workload-monitoring
+  namespace: istio-system
+spec:
+  external_services:
+    istio:
+      config_map_name: istio-<revision-name>
+      istio_sidecar_injector_config_map_name: istio-sidecar-injector-<revision-name>
+      istiod_deployment_name: istiod-<revision-name>
+      url_service_version: 'http://istiod-<revision-name>.istio-system:15014/version'
+    prometheus:
+      auth:
+        type: bearer
+        use_kiali_token: true
+      thanos_proxy:
+        enabled: true
+      url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
+```
+
+Apply the configuration:
+
+```bash
+kubectl apply -f kiali.yaml
+```
+
+### Integrate with Distributed Tracing
+
+Configure Kiali to read traces from Tempo:
+
+```yaml
+apiVersion: kiali.io/v1alpha1
+kind: Kiali
+metadata:
+  name: kiali-user-workload-monitoring
+  namespace: istio-system
+spec:
+  external_services:
+    grafana:
+      enabled: true
+      url: "http://grafana-istio-system.apps-crc.testing/"
+    tracing:
+      enabled: true
+      provider: tempo
+      use_grpc: false
+      in_cluster_url: http://tempo-sample-query-frontend.tempo:3200
+      url: 'https://tempo-sample-query-frontend-tempo.apps-crc.testing'
+      tempo_config:
+        org_id: "1"
+        datasource_uid: "a8d2ef1c-d31c-4de5-a90b-e7bc5252cd00"
+```
+
+### Access Kiali
+
+1. Get the Kiali route:
+
+```bash
+kubectl get route kiali -n istio-system
+```
+
+2. Open the URL in your browser
+3. Select a Workload/Service/App
+4. Click the **Traces** tab to view distributed traces
+
+## High Availability Configuration
+
+For production deployments, configure istiod with high availability:
+
+### Using Fixed Replica Count
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  values:
+    pilot:
+      autoscaleEnabled: false
+      replicaCount: 2
+```
+
+### Using Autoscaling
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  values:
+    pilot:
+      autoscaleMin: 2
+      autoscaleMax: 5
+      cpu:
+        targetAverageUtilization: 80
+      memory:
+        targetAverageUtilization: 80
+```
+
+<Tip>
+Autoscaling provides better resource efficiency but requires proper monitoring to ensure metrics trigger scaling correctly.
+</Tip>
+
+### Verify HA Configuration
+
+```bash
+kubectl get pods -n istio-system -l app=istiod
+```
+
+You should see at least 2 istiod pods running.
+
+### Single-Node Cluster Considerations
+
+For single-node clusters, disable the Pod Disruption Budget:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  values:
+    global:
+      defaultPodDisruptionBudget:
+        enabled: false
+```
+
+## Monitoring Commands
+
+<CodeGroup>
+```bash Check Control Plane Status
+kubectl get istio -n istio-system
+kubectl get pods -n istio-system -l app=istiod
+```
+
+```bash View Proxy Status
+istioctl proxy-status
+```
+
+```bash Check Ambient Components
+kubectl get ztunnel
+kubectl get pods -n ztunnel -l app=ztunnel
+istioctl ztunnel-config workloads -n ztunnel
+```
+
+```bash View Istiod Logs
+kubectl logs -n istio-system -l app=istiod --tail=100 -f
+```
+
+```bash Check XDS Sync Status
+istioctl proxy-config endpoint <pod-name>.<namespace>
+```
+</CodeGroup>
+
+## Related Resources
+
+- [Upgrades](/operations/upgrades) - Update Istio components safely
+- [Troubleshooting](/operations/troubleshooting) - Diagnose common issues
+- [Istio Observability Documentation](https://istio.io/latest/docs/tasks/observability/)

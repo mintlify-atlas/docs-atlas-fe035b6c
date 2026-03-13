@@ -1,80 +1,345 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get your Istio control plane running in minutes with Sail Operator
 ---
 
-## Get started in three steps
+This quickstart guide will help you deploy your first Istio control plane using Sail Operator on a Kubernetes cluster.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Before you begin, ensure you have:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+- A Kubernetes cluster (v1.27 or later)
+- `kubectl` configured to access your cluster
+- Cluster admin permissions
 
-### Step 2: Deploy your changes
+<Info>
+For a local development environment, you can use [KIND](https://kind.sigs.k8s.io/), [minikube](https://minikube.sigs.k8s.io/), or [k3d](https://k3d.io/).
+</Info>
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+## Install Sail Operator
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+<Steps>
+  <Step title="Apply the Operator Manifest">
+    Install the latest version of Sail Operator:
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```bash
+    kubectl apply -f https://github.com/istio-ecosystem/sail-operator/releases/latest/download/install.yaml
+    ```
 
-### Step 3: Go live
+    This creates the `sail-operator` namespace and deploys the operator.
+  </Step>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+  <Step title="Verify the Operator is Running">
+    Check that the operator pod is running:
 
-## Next steps
+    ```bash
+    kubectl get pods -n sail-operator
+    ```
 
-Now that you have your docs running, explore these key features:
+    You should see output similar to:
+    ```
+    NAME                             READY   STATUS    RESTARTS   AGE
+    sail-operator-5d7c8f8b7b-xxxxx   1/1     Running   0          30s
+    ```
+  </Step>
+</Steps>
+
+## Deploy Istio Control Plane
+
+Now that the operator is installed, deploy your Istio control plane.
+
+<Tabs>
+  <Tab title="Sidecar Mode">
+    Deploy Istio in traditional sidecar mode:
+
+    <Steps>
+      <Step title="Create the istio-system Namespace">
+        ```bash
+        kubectl create namespace istio-system
+        ```
+      </Step>
+
+      <Step title="Create the Istio Resource">
+        Create a file named `istio.yaml`:
+
+        ```yaml istio.yaml
+        apiVersion: sailoperator.io/v1
+        kind: Istio
+        metadata:
+          name: default
+        spec:
+          version: v1.29-latest
+          namespace: istio-system
+        ```
+
+        Apply it:
+        ```bash
+        kubectl apply -f istio.yaml
+        ```
+      </Step>
+
+      <Step title="Verify the Installation">
+        Check the Istio resource status:
+
+        ```bash
+        kubectl get istio -A
+        ```
+
+        Wait for the `STATUS` to show `Healthy`:
+        ```
+        NAME      NAMESPACE       PROFILE   REVISIONS   READY   IN USE   ACTIVE REVISION   STATUS    VERSION        AGE
+        default   istio-system              1           1       0        default           Healthy   v1.29.1        1m
+        ```
+
+        Verify the control plane pods are running:
+
+        ```bash
+        kubectl get pods -n istio-system
+        ```
+
+        You should see the `istiod` pod running:
+        ```
+        NAME                      READY   STATUS    RESTARTS   AGE
+        istiod-xxxxxxxxxx-xxxxx   1/1     Running   0          1m
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+
+  <Tab title="Ambient Mode">
+    Deploy Istio in ambient mesh mode (sidecar-less):
+
+    <Steps>
+      <Step title="Create Required Namespaces">
+        ```bash
+        kubectl create namespace istio-system
+        kubectl create namespace istio-cni
+        kubectl create namespace ztunnel
+        ```
+      </Step>
+
+      <Step title="Deploy Istio Control Plane">
+        Create a file named `istio-ambient.yaml`:
+
+        ```yaml istio-ambient.yaml
+        apiVersion: sailoperator.io/v1
+        kind: Istio
+        metadata:
+          name: default
+        spec:
+          version: v1.29-latest
+          namespace: istio-system
+          profile: ambient
+        ```
+
+        Apply it:
+        ```bash
+        kubectl apply -f istio-ambient.yaml
+        ```
+      </Step>
+
+      <Step title="Deploy IstioCNI">
+        Create a file named `istiocni.yaml`:
+
+        ```yaml istiocni.yaml
+        apiVersion: sailoperator.io/v1
+        kind: IstioCNI
+        metadata:
+          name: default
+        spec:
+          version: v1.29-latest
+          namespace: istio-cni
+          profile: ambient
+        ```
+
+        Apply it:
+        ```bash
+        kubectl apply -f istiocni.yaml
+        ```
+      </Step>
+
+      <Step title="Deploy ZTunnel">
+        Create a file named `ztunnel.yaml`:
+
+        ```yaml ztunnel.yaml
+        apiVersion: sailoperator.io/v1
+        kind: ZTunnel
+        metadata:
+          name: default
+        spec:
+          version: v1.29-latest
+          namespace: ztunnel
+        ```
+
+        Apply it:
+        ```bash
+        kubectl apply -f ztunnel.yaml
+        ```
+      </Step>
+
+      <Step title="Verify All Components">
+        Check the status of all components:
+
+        ```bash
+        kubectl get istio,istiocni,ztunnel -A
+        ```
+
+        All resources should show `Healthy` status:
+        ```
+        NAME                                NAMESPACE      PROFILE   REVISIONS   READY   IN USE   ACTIVE REVISION   STATUS    VERSION     AGE
+        istio.sailoperator.io/default       istio-system   ambient   1           1       0        default           Healthy   v1.29.1     2m
+
+        NAME                                NAMESPACE    PROFILE   READY   STATUS    VERSION     AGE
+        istiocni.sailoperator.io/default    istio-cni    ambient   True    Healthy   v1.29.1     2m
+
+        NAME                                NAMESPACE   READY   STATUS    VERSION     AGE
+        ztunnel.sailoperator.io/default     ztunnel     True    Healthy   v1.29.1     2m
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Deploy a Sample Application
+
+Let's deploy a sample application to verify your service mesh is working.
+
+<Steps>
+  <Step title="Create a Sample Namespace">
+    ```bash
+    kubectl create namespace sample
+    ```
+  </Step>
+
+  <Step title="Label the Namespace">
+    <Tabs>
+      <Tab title="Sidecar Mode">
+        Enable automatic sidecar injection:
+        ```bash
+        kubectl label namespace sample istio-injection=enabled
+        ```
+      </Tab>
+      <Tab title="Ambient Mode">
+        Add the namespace to the ambient mesh:
+        ```bash
+        kubectl label namespace sample istio.io/dataplane-mode=ambient
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Deploy a Sample Application">
+    Deploy a simple sleep pod:
+
+    ```bash
+    kubectl apply -n sample -f https://raw.githubusercontent.com/istio/istio/release-1.29/samples/sleep/sleep.yaml
+    ```
+  </Step>
+
+  <Step title="Verify the Deployment">
+    <Tabs>
+      <Tab title="Sidecar Mode">
+        Check that the pod has 2 containers (app + sidecar):
+        ```bash
+        kubectl get pods -n sample
+        ```
+
+        You should see `READY 2/2`:
+        ```
+        NAME                     READY   STATUS    RESTARTS   AGE
+        sleep-xxxxxxxxxx-xxxxx   2/2     Running   0          30s
+        ```
+      </Tab>
+      <Tab title="Ambient Mode">
+        Check that the pod is running:
+        ```bash
+        kubectl get pods -n sample
+        ```
+
+        The pod should have only 1 container (no sidecar):
+        ```
+        NAME                     READY   STATUS    RESTARTS   AGE
+        sleep-xxxxxxxxxx-xxxxx   1/1     Running   0          30s
+        ```
+
+        Verify ambient mode is active:
+        ```bash
+        kubectl exec -n sample deploy/sleep -- curl -s http://istiod.istio-system:15014/debug/endpointz | grep sample
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+</Steps>
+
+<Check>
+**Congratulations!** You've successfully deployed Istio using Sail Operator. Your service mesh is now ready to use.
+</Check>
+
+## What's Next?
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Core Concepts" icon="book" href="/concepts/overview">
+    Learn about Istio, IstioRevision, and other custom resources
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/configuration/helm-values">
+    Customize your control plane with Helm values
+  </Card>
+  <Card title="Deployment Modes" icon="server" href="/deployment/sidecar-mode">
+    Understand sidecar vs ambient mesh architectures
+  </Card>
+  <Card title="Operations" icon="gears" href="/operations/upgrades">
+    Learn how to upgrade and manage your mesh
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Operator pod is not starting">
+    Check the operator logs:
+    ```bash
+    kubectl logs -n sail-operator -l app=sail-operator
+    ```
+
+    Ensure your cluster meets the minimum Kubernetes version requirement (v1.27+).
+  </Accordion>
+
+  <Accordion title="Istio resource stuck in Reconciling state">
+    Check the status for error messages:
+    ```bash
+    kubectl describe istio default
+    ```
+
+    Common issues:
+    - Insufficient cluster resources
+    - Image pull errors
+    - Network connectivity issues
+  </Accordion>
+
+  <Accordion title="Sidecar not injecting">
+    Verify the namespace label:
+    ```bash
+    kubectl get namespace sample --show-labels
+    ```
+
+    Check the webhook configuration:
+    ```bash
+    kubectl get mutatingwebhookconfigurations
+    ```
+  </Accordion>
+
+  <Accordion title="Ambient mode: Pods not in mesh">
+    Verify ZTunnel is running on all nodes:
+    ```bash
+    kubectl get pods -n ztunnel -o wide
+    ```
+
+    Check the namespace label:
+    ```bash
+    kubectl get namespace sample -o yaml | grep dataplane-mode
+    ```
+  </Accordion>
+</AccordionGroup>
+
+For more detailed troubleshooting, see the [Troubleshooting Guide](/operations/troubleshooting).

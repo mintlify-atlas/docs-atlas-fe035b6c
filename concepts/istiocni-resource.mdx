@@ -1,0 +1,647 @@
+---
+title: IstioCNI Resource
+description: Manage the Istio CNI plugin for network traffic redirection
+---
+
+## Overview
+
+The `IstioCNI` resource manages the lifecycle of Istio's Container Network Interface (CNI) plugin. The CNI plugin handles network traffic redirection for the service mesh without requiring `NET_ADMIN` and `NET_RAW` capabilities in the init containers.
+
+<Info>
+  The CNI plugin is **required** on OpenShift and for Istio's ambient mesh mode. It's optional but recommended for standard sidecar deployments.
+</Info>
+
+## Why Use Istio CNI?
+
+By default, Istio uses an init container (`istio-init`) to configure iptables rules for traffic redirection. This requires privileged security context:
+
+```yaml
+initContainers:
+- name: istio-init
+  securityContext:
+    capabilities:
+      add:
+      - NET_ADMIN
+      - NET_RAW
+```
+
+**Problems with init container approach**:
+- Requires elevated privileges
+- Incompatible with strict security policies (OpenShift SCC, PSA)
+- Runs in every pod
+- Cannot intercept all traffic patterns
+
+**Benefits of CNI plugin**:
+- No privileged init containers needed
+- Compatible with restrictive security policies
+- Required for ambient mesh
+- Better performance (configuration happens at CNI level)
+- More comprehensive traffic interception
+
+## Basic Example
+
+Here's a minimal `IstioCNI` resource:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+```
+
+This deploys the CNI plugin as a DaemonSet in the `istio-cni` namespace.
+
+<Warning>
+  The `metadata.name` **must** be `default`. This is enforced by CRD validation to ensure only one `IstioCNI` resource exists cluster-wide.
+</Warning>
+
+## Spec Fields
+
+### version
+
+<ParamField path="spec.version" type="string" required>
+  The Istio version of the CNI plugin to install.
+  
+  **Format**: `v1.29.1` (specific) or `v1.29-latest` (latest patch)
+  
+  **Default**: `v1.29.1`
+  
+  **Compatibility**: The CNI plugin at version `1.x` is compatible with Istio at versions `1.x-1`, `1.x`, and `1.x+1`.
+</ParamField>
+
+### namespace
+
+<ParamField path="spec.namespace" type="string" required>
+  The namespace where the CNI plugin DaemonSet will be installed.
+  
+  **Default**: `istio-cni`
+  
+  **Immutable**: This field cannot be changed after creation.
+</ParamField>
+
+### profile
+
+<ParamField path="spec.profile" type="string">
+  The built-in configuration profile to use.
+  
+  **Options**: `ambient`, `default`, `demo`, `empty`, `openshift`, `openshift-ambient`, `preview`, `remote`, `stable`
+  
+  **Default behavior**: The `default` profile is always applied. On OpenShift, the `openshift` profile is also applied.
+</ParamField>
+
+### values
+
+<ParamField path="spec.values" type="object">
+  Helm values for the `istio-cni` chart. This exposes all CNI-specific configuration options.
+  
+  See [CNI Values Reference](/api/cni-values) for available options.
+</ParamField>
+
+## Status Fields
+
+The `IstioCNI` resource status provides information about the DaemonSet state:
+
+### observedGeneration
+
+<ResponseField name="status.observedGeneration" type="integer">
+  The most recent generation observed by the controller.
+</ResponseField>
+
+### state
+
+<ResponseField name="status.state" type="string">
+  A high-level summary of the CNI plugin state.
+  
+  **Possible values**:
+  - `Healthy` - DaemonSet is ready
+  - `ReconcileError` - Reconciliation failed
+  - `DaemonSetNotReady` - DaemonSet exists but not ready
+  - `ReadinessCheckFailed` - Cannot determine readiness
+</ResponseField>
+
+### conditions
+
+<ResponseField name="status.conditions" type="array">
+  Detailed conditions about the CNI plugin state.
+  
+  **Condition Types**:
+  - `Reconciled` - Whether reconciliation succeeded
+  - `Ready` - Whether the DaemonSet is ready
+</ResponseField>
+
+## Examples
+
+### Basic Deployment
+
+Simple CNI plugin installation:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+```
+
+### OpenShift Deployment
+
+CNI configuration for OpenShift:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+  profile: openshift
+```
+
+### Custom CNI Configuration
+
+Customize CNI plugin behavior:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+  values:
+    cni:
+      # CNI binary directory
+      cniConfDir: /etc/cni/net.d
+      cniBinDir: /opt/cni/bin
+      
+      # Exclude specific namespaces from mesh
+      excludeNamespaces:
+      - kube-system
+      - kube-public
+      - local-path-storage
+      
+      # Resource limits
+      resources:
+        requests:
+          cpu: 100m
+          memory: 100Mi
+        limits:
+          cpu: 500m
+          memory: 500Mi
+```
+
+### Ambient Mode Configuration
+
+CNI for ambient mesh:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+  profile: ambient
+  values:
+    cni:
+      ambient:
+        enabled: true
+```
+
+### With Network-Specific Paths
+
+Customize for different Kubernetes distributions:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+  values:
+    cni:
+      # For Flatcar Container Linux
+      cniConfDir: /etc/kubernetes/cni/net.d
+      cniBinDir: /opt/kubernetes/bin
+```
+
+## Common CNI Configuration Options
+
+Key configuration options available through `spec.values.cni`:
+
+### excludeNamespaces
+
+Namespaces to exclude from the mesh:
+
+```yaml
+values:
+  cni:
+    excludeNamespaces:
+    - kube-system
+    - kube-public
+    - istio-operator
+```
+
+### logLevel
+
+Control CNI plugin logging:
+
+```yaml
+values:
+  cni:
+    logLevel: info  # debug, info, warn, error
+```
+
+### chained
+
+Enable CNI plugin chaining:
+
+```yaml
+values:
+  cni:
+    chained: true  # Run as a chained CNI plugin
+```
+
+### resource limits
+
+Set resource limits for the DaemonSet:
+
+```yaml
+values:
+  cni:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 100Mi
+      limits:
+        cpu: 500m
+        memory: 500Mi
+```
+
+## Update Strategy
+
+The `IstioCNI` resource uses **InPlace** updates:
+
+1. When you change `spec.version` or `spec.values`
+2. The operator updates the DaemonSet in place
+3. Pods are rolled out node by node
+4. Existing mesh traffic continues during the update
+
+<Info>
+  Unlike the `Istio` resource, there is no `RevisionBased` strategy for CNI. The CNI plugin is version-compatible across ±1 minor version of Istio.
+</Info>
+
+### Updating CNI Version
+
+Update to a new version:
+
+```bash
+kubectl patch istiocni default --type='merge' -p '{"spec":{"version":"v1.29.1"}}'
+```
+
+Monitor the rollout:
+
+```bash
+kubectl rollout status daemonset istio-cni-node -n istio-cni
+```
+
+## Common Patterns
+
+### Checking CNI Status
+
+Get the current state:
+
+```bash
+kubectl get istiocni default
+```
+
+Output:
+```
+NAME      NAMESPACE    READY   STATUS    VERSION    AGE
+default   istio-cni    True    Healthy   v1.29.1    5d
+```
+
+View detailed status:
+
+```bash
+kubectl get istiocni default -o yaml
+```
+
+### Verifying CNI Plugin Installation
+
+Check the DaemonSet:
+
+```bash
+kubectl get daemonset istio-cni-node -n istio-cni
+```
+
+Check pods on each node:
+
+```bash
+kubectl get pods -n istio-cni -o wide
+```
+
+Verify CNI binary installed:
+
+```bash
+kubectl exec -n istio-cni daemonset/istio-cni-node -- ls -la /host/opt/cni/bin/istio-cni
+```
+
+Check CNI configuration:
+
+```bash
+kubectl exec -n istio-cni daemonset/istio-cni-node -- cat /host/etc/cni/net.d/*istio*
+```
+
+### Viewing CNI Logs
+
+Check CNI plugin logs:
+
+```bash
+kubectl logs -n istio-cni -l app=istio-cni-node
+```
+
+Follow logs:
+
+```bash
+kubectl logs -n istio-cni -l app=istio-cni-node -f
+```
+
+## Dependencies
+
+The `IstioCNI` resource is required for:
+
+### Ambient Mesh
+
+Ambient mesh requires CNI to intercept traffic at L4:
+
+```yaml
+# 1. Deploy CNI
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+  profile: ambient
+---
+# 2. Deploy Istio with ambient profile
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  values:
+    pilot:
+      cni:
+        enabled: true
+---
+# 3. Deploy ZTunnel
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+```
+
+### OpenShift
+
+OpenShift's Security Context Constraints (SCC) require CNI:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+  profile: openshift
+```
+
+### Restrictive Pod Security Standards
+
+When using Kubernetes Pod Security Standards (PSS) in `restricted` mode:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-cni
+```
+
+## Enabling CNI for Istio
+
+After deploying `IstioCNI`, configure `Istio` to use it:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    pilot:
+      cni:
+        enabled: true  # Enable CNI plugin usage
+```
+
+The operator will:
+1. Check that `IstioCNI` resource exists and is healthy
+2. Set `DependenciesHealthy` condition on `Istio` resource
+3. Configure istiod to skip privileged init containers
+
+## Validation Rules
+
+The `IstioCNI` resource includes strict validation:
+
+<AccordionGroup>
+  <Accordion title="Singleton Constraint">
+    Only one `IstioCNI` resource can exist, and it must be named `default`:
+    
+    ```yaml
+    rule: "self.metadata.name == 'default'"
+    message: "metadata.name must be 'default'"
+    ```
+  </Accordion>
+  
+  <Accordion title="Namespace Immutability">
+    The namespace cannot be changed after creation:
+    
+    ```yaml
+    rule: "self == oldSelf"
+    message: "Value is immutable"
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Deploy CNI Before Istio">
+    Always deploy and wait for CNI to be ready before deploying Istio:
+    
+    ```bash
+    # 1. Deploy CNI
+    kubectl apply -f istiocni.yaml
+    
+    # 2. Wait for CNI to be ready
+    kubectl wait --for=condition=Ready istiocni/default --timeout=300s
+    
+    # 3. Deploy Istio
+    kubectl apply -f istio.yaml
+    ```
+  </Accordion>
+  
+  <Accordion title="Use Compatible Versions">
+    Ensure CNI version is compatible with Istio version:
+    
+    | Istio Version | Compatible CNI Versions |
+    |---------------|-------------------------|
+    | 1.29.x | 1.28.x, 1.29.x, 1.30.x |
+    | 1.28.x | 1.27.x, 1.28.x, 1.29.x |
+  </Accordion>
+  
+  <Accordion title="Exclude System Namespaces">
+    Always exclude Kubernetes system namespaces:
+    
+    ```yaml
+    values:
+      cni:
+        excludeNamespaces:
+        - kube-system
+        - kube-public
+        - kube-node-lease
+    ```
+  </Accordion>
+  
+  <Accordion title="Set Resource Limits">
+    Configure resource limits for the CNI DaemonSet:
+    
+    ```yaml
+    values:
+      cni:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 100Mi
+          limits:
+            cpu: 500m
+            memory: 500Mi
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+### CNI Plugin Not Ready
+
+1. Check DaemonSet status:
+   ```bash
+   kubectl get daemonset istio-cni-node -n istio-cni
+   ```
+
+2. Check pod status:
+   ```bash
+   kubectl get pods -n istio-cni
+   ```
+
+3. Check logs for errors:
+   ```bash
+   kubectl logs -n istio-cni -l app=istio-cni-node --tail=50
+   ```
+
+### Sidecar Injection Fails
+
+If pods fail to start after enabling CNI:
+
+1. Verify CNI is healthy:
+   ```bash
+   kubectl get istiocni default
+   ```
+
+2. Check if CNI binary exists on nodes:
+   ```bash
+   kubectl exec -n istio-cni daemonset/istio-cni-node -- ls -la /host/opt/cni/bin/
+   ```
+
+3. Check CNI configuration file:
+   ```bash
+   kubectl exec -n istio-cni daemonset/istio-cni-node -- cat /host/etc/cni/net.d/istio-cni.conf
+   ```
+
+4. Verify Istio is configured to use CNI:
+   ```bash
+   kubectl get istio default -o jsonpath='{.spec.values.pilot.cni.enabled}'
+   ```
+
+### CNI Update Stuck
+
+1. Check DaemonSet rollout:
+   ```bash
+   kubectl rollout status daemonset istio-cni-node -n istio-cni
+   ```
+
+2. Check for pods in error state:
+   ```bash
+   kubectl get pods -n istio-cni -o wide
+   ```
+
+3. Force pod deletion if needed:
+   ```bash
+   kubectl delete pod -n istio-cni <pod-name> --force --grace-period=0
+   ```
+
+### Version Incompatibility
+
+If Istio fails with CNI errors:
+
+1. Check version compatibility:
+   ```bash
+   ISTIO_VERSION=$(kubectl get istio default -o jsonpath='{.spec.version}')
+   CNI_VERSION=$(kubectl get istiocni default -o jsonpath='{.spec.version}')
+   echo "Istio: $ISTIO_VERSION, CNI: $CNI_VERSION"
+   ```
+
+2. Update CNI if needed:
+   ```bash
+   kubectl patch istiocni default --type='merge' -p '{"spec":{"version":"<compatible-version>"}}'
+   ```
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Istio Resource" icon="ship" href="/concepts/istio-resource">
+    Configure Istio to use CNI
+  </Card>
+  <Card title="ZTunnel" icon="tunnel" href="/concepts/ztunnel-resource">
+    L4 proxy for ambient mode
+  </Card>
+  <Card title="Ambient Mode" icon="cloud" href="/deployment/ambient-mode">
+    Deploy Istio in ambient mode
+  </Card>
+  <Card title="API Reference" icon="book" href="/api/istiocni">
+    Complete API documentation
+  </Card>
+</CardGroup>

@@ -1,0 +1,341 @@
+---
+title: Dual-Stack Networking
+description: Configure Istio to support both IPv4 and IPv6 traffic in your service mesh
+---
+
+Istio supports dual-stack networking, allowing services to communicate over both IPv4 and IPv6 simultaneously. This enables organizations to transition to IPv6 while maintaining IPv4 compatibility.
+
+## Overview
+
+Kubernetes introduced dual-stack networking as a stable feature in v1.23. With dual-stack enabled:
+
+- Pods receive both IPv4 and IPv6 addresses
+- Services can expose endpoints on both IP families
+- Applications can communicate using either protocol
+
+Istio dual-stack support reached:
+- **Experimental** in v1.17
+- **Alpha** in v1.24
+- **Beta** in v1.28
+
+<Info>
+Dual-stack enables seamless IPv6 adoption without breaking existing IPv4 infrastructure. Services can gradually migrate while maintaining backward compatibility.
+</Info>
+
+## Prerequisites
+
+- Kubernetes v1.23 or later with dual-stack enabled
+- Sail Operator installed
+- Cluster networking configured for dual-stack (both IPv4 and IPv6 CIDRs)
+
+### Create a Dual-Stack Cluster
+
+For testing with Kind:
+
+```bash
+kind create cluster --name istio-ds --config - <<EOF
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  ipFamily: dual
+EOF
+```
+
+<Tip>
+Most cloud providers now offer dual-stack Kubernetes clusters. Check your provider's documentation for setup instructions.
+</Tip>
+
+## Configure Istio for Dual-Stack
+
+Deploy Istio with dual-stack configuration:
+
+```yaml
+kubectl create namespace istio-system
+
+kubectl apply -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  values:
+    meshConfig:
+      defaultConfig:
+        proxyMetadata:
+          ISTIO_DUAL_STACK: "true"
+    pilot:
+      ipFamilyPolicy: RequireDualStack
+      env:
+        ISTIO_DUAL_STACK: "true"
+EOF
+```
+
+Wait for the control plane to be ready:
+
+```bash
+kubectl wait --for=condition=Ready istios/default -n istio-system --timeout=3m
+```
+
+### Configuration Details
+
+<AccordionGroup>
+  <Accordion title="ISTIO_DUAL_STACK Environment Variable">
+    Setting `ISTIO_DUAL_STACK: "true"` enables dual-stack mode in:
+    - **Istiod** (`pilot.env`) - Control plane recognizes dual-stack services
+    - **Envoy proxies** (`proxyMetadata`) - Sidecars handle both IPv4 and IPv6 traffic
+  </Accordion>
+
+  <Accordion title="ipFamilyPolicy: RequireDualStack">
+    This configures the istiod service's IP family policy:
+    - **RequireDualStack** - Service must have both IPv4 and IPv6 addresses
+    - **PreferDualStack** - Use dual-stack if available, fall back to single-stack
+    - **SingleStack** - Use only one IP family
+    
+    For production dual-stack deployments, `RequireDualStack` ensures the mesh operates correctly.
+  </Accordion>
+</AccordionGroup>
+
+### OpenShift Configuration
+
+On OpenShift, also deploy IstioCNI:
+
+```yaml
+kubectl create namespace istio-cni
+
+kubectl apply -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  namespace: istio-cni
+EOF
+```
+
+## Deploy Dual-Stack Applications
+
+### Create Test Namespaces
+
+Deploy services with different IP family configurations:
+
+```bash
+# Create namespaces
+kubectl create namespace dual-stack
+kubectl create namespace ipv4
+kubectl create namespace ipv6
+kubectl create namespace sleep
+
+# Enable sidecar injection
+kubectl label namespace dual-stack istio-injection=enabled
+kubectl label namespace ipv4 istio-injection=enabled
+kubectl label namespace ipv6 istio-injection=enabled
+kubectl label namespace sleep istio-injection=enabled
+```
+
+### Deploy Test Applications
+
+Deploy the tcp-echo sample with different network configurations:
+
+```bash
+# Dual-stack service (both IPv4 and IPv6)
+kubectl apply -n dual-stack \
+  -f https://raw.githubusercontent.com/istio/istio/release-1.29/samples/tcp-echo/tcp-echo-dual-stack.yaml
+
+# IPv4-only service
+kubectl apply -n ipv4 \
+  -f https://raw.githubusercontent.com/istio/istio/release-1.29/samples/tcp-echo/tcp-echo-ipv4.yaml
+
+# IPv6-only service
+kubectl apply -n ipv6 \
+  -f https://raw.githubusercontent.com/istio/istio/release-1.29/samples/tcp-echo/tcp-echo-ipv6.yaml
+
+# Sleep client for testing
+kubectl apply -n sleep \
+  -f https://raw.githubusercontent.com/istio/istio/release-1.29/samples/sleep/sleep.yaml
+
+# Wait for pods to be ready
+kubectl wait --for=condition=Ready pod -n dual-stack -l app=tcp-echo --timeout=60s
+kubectl wait --for=condition=Ready pod -n ipv4 -l app=tcp-echo --timeout=60s
+kubectl wait --for=condition=Ready pod -n ipv6 -l app=tcp-echo --timeout=60s
+kubectl wait --for=condition=Ready pod -n sleep -l app=sleep --timeout=60s
+```
+
+## Validate Dual-Stack Configuration
+
+### Verify Service Configuration
+
+Check that the dual-stack service has the correct IP family policy:
+
+```bash
+kubectl get service tcp-echo -n dual-stack -o jsonpath='{.spec.ipFamilyPolicy}'
+```
+
+Expected output:
+```
+RequireDualStack
+```
+
+Inspect the service's IP families:
+
+```bash
+kubectl get service tcp-echo -n dual-stack -o jsonpath='{.spec.ipFamilies}'
+```
+
+You should see both families:
+```json
+["IPv4","IPv6"]
+```
+
+### Test Connectivity
+
+Verify the sleep pod can reach services on both dual-stack and single-stack configurations:
+
+<CodeGroup>
+```bash Dual-Stack Service
+kubectl exec -n sleep "$(kubectl get pod -n sleep -l app=sleep -o jsonpath='{.items[0].metadata.name}')" \
+  -- sh -c "echo dualstack | nc tcp-echo.dual-stack 9000"
+```
+
+```bash IPv4 Service
+kubectl exec -n sleep "$(kubectl get pod -n sleep -l app=sleep -o jsonpath='{.items[0].metadata.name}')" \
+  -- sh -c "echo ipv4 | nc tcp-echo.ipv4 9000"
+```
+
+```bash IPv6 Service
+kubectl exec -n sleep "$(kubectl get pod -n sleep -l app=sleep -o jsonpath='{.items[0].metadata.name}')" \
+  -- sh -c "echo ipv6 | nc tcp-echo.ipv6 9000"
+```
+</CodeGroup>
+
+Expected responses:
+```
+hello dualstack
+hello ipv4
+hello ipv6
+```
+
+## Understanding Service IP Family Policies
+
+Kubernetes provides three `ipFamilyPolicy` options for services:
+
+<CardGroup cols={3}>
+  <Card title="SingleStack" icon="1">
+    Service uses only one IP family (IPv4 or IPv6)
+  </Card>
+  <Card title="PreferDualStack" icon="2">
+    Assigns both IPs if available, falls back to single-stack
+  </Card>
+  <Card title="RequireDualStack" icon="lock">
+    Service creation fails unless both IP families are available
+  </Card>
+</CardGroup>
+
+### Choosing the Right Policy
+
+- **SingleStack** - Legacy applications that don't need IPv6
+- **PreferDualStack** - Gradual migration, works in both single and dual-stack clusters
+- **RequireDualStack** - Production dual-stack deployments where both protocols are mandatory
+
+<Warning>
+Using `RequireDualStack` on a single-stack cluster will cause service creation to fail.
+</Warning>
+
+## Architecture Considerations
+
+### Load Balancing
+
+Istio's Envoy proxies handle load balancing across both IPv4 and IPv6 endpoints:
+
+- Services with dual-stack configuration expose endpoints on both IP families
+- Clients automatically use the appropriate protocol based on their network configuration
+- No application changes required for protocol selection
+
+### Service Discovery
+
+When dual-stack is enabled:
+
+1. Istiod discovers both IPv4 and IPv6 endpoints for services
+2. Envoy sidecars receive endpoint information for both families
+3. Connection establishment uses the client's preferred IP family
+4. Failover to the alternate IP family occurs if needed
+
+### Gateway Configuration
+
+For ingress and egress gateways in dual-stack environments:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: istio-ingressgateway
+  namespace: istio-system
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: PreferDualStack
+  ipFamilies:
+  - IPv4
+  - IPv6
+```
+
+## Troubleshooting
+
+### Pods Not Getting IPv6 Addresses
+
+Check if the cluster is configured for dual-stack:
+
+```bash
+kubectl get nodes -o jsonpath='{.items[*].spec.podCIDRs}'
+```
+
+You should see both IPv4 and IPv6 CIDRs.
+
+### Service Only Has One IP Family
+
+Verify the service's `ipFamilyPolicy`:
+
+```bash
+kubectl get svc <service-name> -n <namespace> -o yaml
+```
+
+Ensure `ipFamilyPolicy` is set to `PreferDualStack` or `RequireDualStack`.
+
+### Connectivity Issues
+
+Check Envoy proxy configuration:
+
+```bash
+istioctl proxy-config endpoints <pod-name>.<namespace> --cluster "outbound|<port>||<service>.<namespace>.svc.cluster.local"
+```
+
+Verify both IPv4 and IPv6 endpoints are listed.
+
+## Cleanup
+
+Remove the dual-stack deployment:
+
+```bash
+kubectl delete istio default
+kubectl delete namespace istio-system dual-stack ipv4 ipv6 sleep
+
+# If you deployed IstioCNI
+kubectl delete istiocni default
+kubectl delete namespace istio-cni
+```
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Multi-Cluster Deployment" icon="globe" href="/advanced/multi-cluster">
+    Deploy Istio across multiple clusters
+  </Card>
+  <Card title="Gateway Configuration" icon="door-open" href="/integrations/gateways">
+    Configure ingress and egress gateways
+  </Card>
+  <Card title="Kubernetes Dual-Stack" icon="book" href="https://kubernetes.io/docs/concepts/services-networking/dual-stack/">
+    Official Kubernetes dual-stack documentation
+  </Card>
+  <Card title="Istio Dual-Stack" icon="book" href="https://istio.io/latest/docs/opshttps://istio.io/latest/docs/tasks/traffic-management//dual-stack/">
+    Istio dual-stack configuration guide
+  </Card>
+</CardGroup>

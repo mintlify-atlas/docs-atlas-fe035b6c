@@ -1,0 +1,438 @@
+---
+title: Sidecar Mode
+description: Deploy Istio using traditional sidecar proxies for comprehensive Layer 7 traffic management
+---
+
+Sidecar mode is Istio's traditional deployment model where each application pod gets an Envoy proxy container injected alongside it. This sidecar proxy handles all inbound and outbound traffic for the pod, providing full Layer 4 and Layer 7 capabilities.
+
+## Overview
+
+In sidecar mode, every workload runs with a companion Envoy proxy container that:
+- Intercepts all network traffic to and from the pod
+- Enforces security policies including mTLS encryption
+- Manages traffic routing, load balancing, and retries
+- Collects telemetry data for observability
+
+<Note>
+Sidecar mode is the default deployment model for Istio and provides the most comprehensive feature set. However, it comes with resource overhead as each pod runs its own proxy.
+</Note>
+
+## When to Use Sidecar Mode
+
+Choose sidecar mode when you need:
+
+- **Full Layer 7 features** - HTTP routing, header manipulation, fault injection
+- **Per-pod policy enforcement** - Granular control over individual workloads
+- **Compatibility** - Works with all Istio features and configurations
+- **Proven stability** - Battle-tested deployment model with extensive production usage
+
+## Installation
+
+### Prerequisites
+
+- Sail Operator installed in your cluster
+- Cluster admin access
+- Kubernetes 1.21+ or OpenShift 4.14+
+
+### Step 1: Create the Istio Control Plane
+
+Create the `istio-system` namespace:
+
+```bash
+kubectl create namespace istio-system
+```
+
+Deploy the Istio control plane:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+    inactiveRevisionDeletionGracePeriodSeconds: 30
+```
+
+Apply the configuration:
+
+```bash
+kubectl apply -f istio-sample.yaml
+```
+
+### Step 2: Verify Installation
+
+Check that the control plane is healthy:
+
+```bash
+kubectl get istio -n istio-system
+```
+
+Expected output:
+
+```
+NAME      REVISIONS   READY   IN USE   ACTIVE REVISION   STATUS    VERSION    AGE
+default   1           1       0        default           Healthy   v1.29.1    30s
+```
+
+### Step 3: Enable Sidecar Injection
+
+Label your application namespace to enable automatic sidecar injection:
+
+```bash
+kubectl label namespace <your-namespace> istio.io/rev=default
+```
+
+<Note>
+Alternatively, you can use `istio-injection=enabled` for non-revision-based injection.
+</Note>
+
+### Step 4: Deploy Your Application
+
+Deploy your application to the labeled namespace. The Istio admission webhook will automatically inject the sidecar proxy:
+
+```bash
+kubectl apply -f your-app.yaml -n <your-namespace>
+```
+
+### Step 5: Verify Sidecar Injection
+
+Check that pods have 2 containers (application + istio-proxy):
+
+```bash
+kubectl get pods -n <your-namespace>
+```
+
+Expected output:
+
+```
+NAME                          READY   STATUS    RESTARTS   AGE
+my-app-7d8f5c9b4d-x2k9p       2/2     Running   0          1m
+```
+
+The `2/2` indicates both the application container and the sidecar proxy are running.
+
+## Configuration Examples
+
+### Basic Istio Resource
+
+```yaml istio-sample.yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+    inactiveRevisionDeletionGracePeriodSeconds: 30
+```
+
+### Istio with Custom Configuration
+
+```yaml istio-custom.yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+  values:
+    pilot:
+      traceSampling: 1.0
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2048Mi
+    meshConfig:
+      accessLogFile: /dev/stdout
+      defaultConfig:
+        holdApplicationUntilProxyStarts: true
+```
+
+## Sidecar Proxy Configuration
+
+### Resource Limits
+
+Control sidecar resource consumption:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    global:
+      proxy:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 2000m
+            memory: 1024Mi
+```
+
+### Custom Sidecar Image
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    global:
+      proxy:
+        image: docker.io/istio/proxyv2:1.29.1
+```
+
+## Layer 7 Traffic Management
+
+Sidecar mode provides full Layer 7 capabilities:
+
+### Traffic Routing with VirtualService
+
+```yaml reviews-routing.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews
+  namespace: bookinfo
+spec:
+  hosts:
+  - reviews
+  http:
+  - match:
+    - headers:
+        end-user:
+          exact: jason
+    route:
+    - destination:
+        host: reviews
+        subset: v2
+  - route:
+    - destination:
+        host: reviews
+        subset: v1
+      weight: 80
+    - destination:
+        host: reviews
+        subset: v3
+      weight: 20
+```
+
+### Destination Rules for Load Balancing
+
+```yaml reviews-destination.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: reviews
+  namespace: bookinfo
+spec:
+  host: reviews
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_REQUEST
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+  - name: v3
+    labels:
+      version: v3
+```
+
+## Security Policies
+
+### Mutual TLS (mTLS)
+
+mTLS is enabled by default in sidecar mode:
+
+```yaml strict-mtls.yaml
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  mtls:
+    mode: STRICT
+```
+
+### Authorization Policies
+
+```yaml productpage-authz.yaml
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: productpage-viewer
+  namespace: bookinfo
+spec:
+  selector:
+    matchLabels:
+      app: productpage
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/bookinfo/sa/bookinfo-gateway
+    to:
+    - operation:
+        methods: ["GET", "POST"]
+```
+
+## Resource Consumption
+
+Sidecar mode has specific resource implications:
+
+### Per-Pod Overhead
+
+- **CPU**: ~50-100m per sidecar (idle), up to 2+ cores under load
+- **Memory**: ~128-256 MB per sidecar
+- **Network latency**: ~1-2ms additional hop through local proxy
+
+<Warning>
+For clusters with many pods, sidecar resource consumption can add up significantly. Consider [ambient mode](/deployment/ambient-mode) for reduced overhead.
+</Warning>
+
+## Observability
+
+Sidecars automatically collect metrics and traces:
+
+### Metrics Collection
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    meshConfig:
+      defaultConfig:
+        tracing:
+          sampling: 100.0
+          zipkin:
+            address: zipkin.istio-system:9411
+```
+
+### Access Logging
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    meshConfig:
+      accessLogFile: /dev/stdout
+      accessLogEncoding: JSON
+```
+
+## Troubleshooting
+
+### Sidecar Not Injected
+
+Check namespace labels:
+
+```bash
+kubectl get namespace <your-namespace> --show-labels
+```
+
+Verify the injection label is present:
+
+```
+istio.io/rev=default
+```
+
+### Check Sidecar Status
+
+View sidecar proxy logs:
+
+```bash
+kubectl logs <pod-name> -n <namespace> -c istio-proxy
+```
+
+Check sidecar configuration:
+
+```bash
+istioctl proxy-config clusters <pod-name> -n <namespace>
+```
+
+### High Resource Usage
+
+Adjust sidecar resource limits:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    global:
+      proxy:
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+```
+
+## Comparison with Other Modes
+
+<CardGroup cols={2}>
+  <Card title="Ambient Mode" icon="cloud" href="/deployment/ambient-mode">
+    Lighter-weight alternative using shared node proxies
+  </Card>
+  <Card title="Coexistence" icon="arrows-split-up-and-left" href="/deployment/coexistence">
+    Run sidecar and ambient modes together
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Create Gateways" icon="door-open" href="/integrations/gateways">
+    Configure ingress and egress gateways
+  </Card>
+  <Card title="Traffic Management" icon="route" href="https://istio.io/latest/docs/tasks/traffic-management/">
+    Set up advanced routing rules
+  </Card>
+  <Card title="Security Policies" icon="shield-halved" href="https://istio.io/latest/docs/tasks/security/">
+    Configure authentication and authorization
+  </Card>
+  <Card title="Update Strategies" icon="arrow-up" href="/configuration/update-strategies">
+    Learn about control plane upgrades
+  </Card>
+</CardGroup>
+
+## Additional Resources
+
+- [Istio Sidecar Documentation](https://istio.io/latest/docs/setup/additional-setup/sidecar-injection/)
+- [Sail Operator Getting Started](/installation)
+- [Migration from Sidecar to Ambient](/deployment/coexistence)

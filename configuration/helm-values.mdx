@@ -1,0 +1,426 @@
+---
+title: Helm Values Configuration
+description: Configure Istio using Helm values in the Sail Operator
+---
+
+The Sail Operator allows you to configure Istio by specifying Helm values in the `spec.values` field of the Istio resource. This provides access to the full range of Istio configuration options.
+
+## Overview
+
+Helmvalues are applied in the following order (later values override earlier ones):
+
+1. **Profile defaults** - Base configuration from the selected profile
+2. **Vendor defaults** - Platform-specific defaults (if configured)
+3. **User values** - Your custom values in `spec.values`
+
+## Basic Configuration
+
+Specify Helm values directly in the Istio resource:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    global:
+      hub: docker.io/istio
+      tag: 1.29.1
+      logAsJson: true
+    pilot:
+      autoscaleEnabled: true
+      autoscaleMin: 2
+      autoscaleMax: 5
+      traceSampling: 1.0
+```
+
+## Common Configuration Options
+
+### Global Settings
+
+Global settings affect all Istio components:
+
+```yaml
+values:
+  global:
+    # Container image configuration
+    hub: docker.io/istio
+    tag: 1.29.1
+    variant: distroless  # or "debug"
+    imagePullPolicy: IfNotPresent
+    imagePullSecrets:
+      - name: my-registry-secret
+
+    # Namespace configuration
+    istioNamespace: istio-system
+
+    # Logging configuration
+    logAsJson: true
+    logging:
+      level: "default:info"
+
+    # Multi-cluster settings
+    multiCluster:
+      clusterName: cluster-1
+    network: network1
+
+    # Platform detection
+    platform: kubernetes  # or "openshift"
+
+    # IP family configuration
+    ipFamilies:
+      - IPv4
+    ipFamilyPolicy: SingleStack
+```
+
+### Pilot (Istiod) Configuration
+
+Configure the Istio control plane:
+
+```yaml
+values:
+  pilot:
+    # Autoscaling
+    autoscaleEnabled: true
+    autoscaleMin: 2
+    autoscaleMax: 5
+
+    # Resource limits
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2048Mi
+      limits:
+        cpu: 2000m
+        memory: 4096Mi
+
+    # Tracing
+    traceSampling: 1.0
+
+    # Environment variables
+    env:
+      PILOT_FILTER_GATEWAY_CLUSTER_CONFIG: "true"
+
+    # Pod labels and annotations
+    podLabels:
+      app: istiod
+    podAnnotations:
+      prometheus.io/scrape: "true"
+
+    # Affinity and tolerations
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: istiod
+            topologyKey: kubernetes.io/hostname
+```
+
+### Proxy Configuration
+
+Configure sidecar and gateway proxies:
+
+```yaml
+values:
+  global:
+    proxy:
+      # Image configuration
+      image: proxyv2
+
+      # Resource limits for sidecars
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 2000m
+          memory: 1024Mi
+
+      # Logging
+      logLevel: warning
+      componentLogLevel: "misc:error"
+
+      # Lifecycle hooks
+      lifecycle:
+        preStop:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - sleep 15
+
+      # Status port
+      statusPort: 15020
+
+      # Readiness probes
+      readinessInitialDelaySeconds: 1
+      readinessPeriodSeconds: 2
+      readinessFailureThreshold: 30
+
+      # Startup probes
+      startupProbe:
+        enabled: true
+        failureThreshold: 600
+```
+
+## CNI Configuration
+
+When using the CNI plugin:
+
+```yaml
+values:
+  pilot:
+    cni:
+      enabled: true
+      provider: default  # or "multus"
+```
+
+For detailed CNI configuration, use the IstioCNI resource. See [IstioCNI Resource](/concepts/istiocni-resource).
+
+## Mesh Configuration
+
+Configure mesh-wide settings:
+
+```yaml
+values:
+  meshConfig:
+    # Access logging
+    accessLogFile: /dev/stdout
+    accessLogEncoding: JSON
+
+    # Default config for proxies
+    defaultConfig:
+      proxyMetadata:
+        ISTIO_META_DNS_CAPTURE: "true"
+      holdApplicationUntilProxyStarts: true
+
+    # Outbound traffic policy
+    outboundTrafficPolicy:
+      mode: ALLOW_ANY  # or REGISTRY_ONLY
+
+    # Trust domain
+    trustDomain: cluster.local
+
+    # Telemetry configuration
+    enableTracing: true
+    enablePrometheusMerge: true
+```
+
+## Telemetry Configuration
+
+```yaml
+values:
+  telemetry:
+    enabled: true
+    v2:
+      enabled: true
+      prometheus:
+        enabled: true
+```
+
+## Sidecar Injector Configuration
+
+```yaml
+values:
+  sidecarInjectorWebhook:
+    # Enable automatic injection by default
+    enableNamespacesByDefault: false
+
+    # Rewrite health probes
+    rewriteAppHTTPProbe: true
+
+    # Never inject selector
+    neverInjectSelector:
+      - matchExpressions:
+          - key: openshift.io/build.name
+            operator: Exists
+
+    # Always inject selector
+    alwaysInjectSelector:
+      - matchLabels:
+          istio-injection: enabled
+
+    # Custom injection templates
+    templates:
+      custom: |
+        metadata:
+          labels:
+            custom-label: value
+```
+
+## Advanced Configuration
+
+### Security Settings
+
+```yaml
+values:
+  global:
+    # Certificate provider
+    pilotCertProvider: istiod  # or "kubernetes"
+
+    # mTLS settings
+    mountMtlsCerts: false
+
+  meshConfig:
+    # Certificate TTL
+    defaultConfig:
+      proxyMetadata:
+        CERT_ROTATION_CHECK_INTERVAL: "30s"
+```
+
+### Gateway Configuration
+
+```yaml
+values:
+  gateways:
+    istio-ingressgateway:
+      enabled: true
+      type: LoadBalancer
+      ports:
+        - name: http
+          port: 80
+          targetPort: 8080
+        - name: https
+          port: 443
+          targetPort: 8443
+```
+
+<Note>
+Gateway configuration in the Istio resource is deprecated. Use Gateway API resources or the gateway Helm chart directly.
+</Note>
+
+## Validation
+
+The operator validates Helm values against the Istio schema:
+
+- Invalid field names are rejected
+- Type mismatches are caught at admission time
+- Required fields are enforced
+
+```yaml
+# This will be rejected - invalid field
+values:
+  pilot:
+    invalidField: value  # Error: unknown field
+```
+
+## Environment-Specific Overrides
+
+### Development
+
+```yaml
+values:
+  global:
+    proxy:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+  pilot:
+    autoscaleEnabled: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+```
+
+### Production
+
+```yaml
+values:
+  global:
+    proxy:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 2000m
+          memory: 1024Mi
+  pilot:
+    autoscaleEnabled: true
+    autoscaleMin: 3
+    autoscaleMax: 10
+    resources:
+      requests:
+        cpu: 1000m
+        memory: 4096Mi
+```
+
+## Values Reference
+
+For a complete reference of all available Helm values, see:
+
+- [Istio Configuration Reference](https://istio.io/latest/docs/reference/config/istio.operator.v1alpha1/)
+- [Values API Reference](/api/values)
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Start Small" icon="seedling">
+    Begin with minimal configuration and add values as needed. The defaults work well for most use cases.
+  </Card>
+  <Card title="Use Profiles" icon="layer-group">
+    Select the appropriate profile for your deployment model before adding custom values.
+  </Card>
+  <Card title="Validate Early" icon="check-circle">
+    Test configuration changes in a development environment before applying to production.
+  </Card>
+  <Card title="Document Changes" icon="book">
+    Keep track of why specific values were changed from defaults.
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### Values Not Applied
+
+If values aren't taking effect:
+
+1. Check the IstioRevision status:
+   ```bash
+   kubectl get istiorevision -o yaml
+   ```
+
+2. Verify the rendered Helm values:
+   ```bash
+   kubectl get istiorevision <name> -o jsonpath='{.spec.values}' | jq
+   ```
+
+3. Check istiod logs:
+   ```bash
+   kubectl logs -n istio-system -l app=istiod
+   ```
+
+### Schema Validation Errors
+
+If you receive validation errors:
+
+```bash
+# Check the error message
+kubectl get istio default -o yaml | grep -A 5 conditions
+
+# Verify against the Istio schema
+kubectl explain istio.spec.values.pilot
+```
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Profiles" icon="sliders" href="/configuration/profiles">
+    Learn about built-in configuration profiles
+  </Card>
+  <Card title="Update Strategies" icon="arrows-rotate" href="/configuration/update-strategies">
+    Control how configuration changes are applied
+  </Card>
+  <Card title="Values API" icon="code" href="/api/values">
+    Complete API reference for all Helm values
+  </Card>
+  <Card title="Istio Resource" icon="cube" href="/concepts/istio-resource">
+    Understanding the Istio custom resource
+  </Card>
+</CardGroup>

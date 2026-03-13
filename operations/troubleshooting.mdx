@@ -1,0 +1,663 @@
+---
+title: Troubleshooting
+description: Diagnose and resolve common issues with the Sail Operator and Istio deployments
+---
+
+This guide helps you diagnose and resolve common issues when operating Istio with the Sail Operator.
+
+## General Troubleshooting Workflow
+
+<Steps>
+  <Step title="Check Resource Status">
+    Verify the status of Sail Operator custom resources:
+    
+    ```bash
+    kubectl get istio -A
+    kubectl get istiorevision -A
+    kubectl get istiocni -A
+    kubectl get ztunnel -A
+    ```
+    
+    Look for resources with `STATUS` not showing `Healthy` or `READY` showing `False`.
+  </Step>
+  
+  <Step title="Check Pod Status">
+    Examine control plane and data plane pods:
+    
+    ```bash
+    kubectl get pods -n istio-system
+    kubectl get pods -n istio-cni
+    kubectl get pods -n ztunnel
+    ```
+    
+    Look for pods that are not `Running` or have high restart counts.
+  </Step>
+  
+  <Step title="Review Logs">
+    Check logs for error messages:
+    
+    ```bash
+    # Sail Operator logs
+    kubectl logs -n sail-operator deployment/sail-operator
+    
+    # Istiod logs
+    kubectl logs -n istio-system -l app=istiod --tail=100
+    
+    # ZTunnel logs (ambient mode)
+    kubectl logs -n ztunnel -l app=ztunnel --tail=100
+    ```
+  </Step>
+  
+  <Step title="Check Events">
+    Review Kubernetes events for the resources:
+    
+    ```bash
+    kubectl describe istio <name> -n <namespace>
+    kubectl get events -n istio-system --sort-by='.lastTimestamp'
+    ```
+  </Step>
+</Steps>
+
+## Installation Issues
+
+### Sail Operator Pod Not Starting
+
+**Symptoms:**
+- Sail Operator pod in `CrashLoopBackOff` or `Error` state
+- Custom resources not being reconciled
+
+**Diagnosis:**
+
+```bash
+kubectl get pods -n sail-operator
+kubectl logs -n sail-operator deployment/sail-operator --previous
+```
+
+**Common causes:**
+
+<AccordionGroup>
+  <Accordion title="Insufficient RBAC permissions">
+    Verify the Sail Operator has necessary permissions:
+    
+    ```bash
+    kubectl get clusterrole sail-operator
+    kubectl get clusterrolebinding sail-operator
+    ```
+    
+    Reinstall the operator if roles are missing.
+  </Accordion>
+  
+  <Accordion title="Image pull errors">
+    Check image pull secrets and repository access:
+    
+    ```bash
+    kubectl describe pod -n sail-operator -l app=sail-operator
+    ```
+    
+    Look for `ImagePullBackOff` or authentication errors.
+  </Accordion>
+  
+  <Accordion title="Resource constraints">
+    Verify sufficient cluster resources:
+    
+    ```bash
+    kubectl top nodes
+    kubectl describe nodes
+    ```
+    
+    Ensure nodes have available CPU and memory.
+  </Accordion>
+</AccordionGroup>
+
+### Istio Resource Not Reconciling
+
+**Symptoms:**
+- Istio resource shows `STATUS: Reconciling` or `ReconcileError`
+- Istiod pods not created
+
+**Diagnosis:**
+
+```bash
+kubectl get istio -A
+kubectl describe istio <name> -n <namespace>
+kubectl logs -n sail-operator deployment/sail-operator | grep -i error
+```
+
+**Common causes:**
+
+- **Invalid version specified**: Check supported versions in `pkg/istioversion/versions.yaml`
+- **Namespace doesn't exist**: Create the namespace specified in `spec.namespace`
+- **Invalid Helm values**: Validate the values in `spec.values`
+
+**Resolution:**
+
+```bash
+# Check supported versions
+kubectl get istio <name> -n <namespace> -o yaml | grep version
+
+# Create missing namespace
+kubectl create namespace istio-system
+
+# View detailed error messages
+kubectl get istio <name> -n <namespace> -o yaml | grep -A 10 conditions
+```
+
+### CRD Installation Failures
+
+**Symptoms:**
+- Error creating Istio resources: `no matches for kind "Istio"`
+- Kubectl doesn't recognize custom resources
+
+**Diagnosis:**
+
+```bash
+kubectl get crd | grep sailoperator
+kubectl get crd istios.sailoperator.io -o yaml
+```
+
+**Resolution:**
+
+Reinstall CRDs:
+
+```bash
+kubectl apply -f https://github.com/istio-ecosystem/sail-operator/releases/latest/download/istio-operator.yaml
+```
+
+## Control Plane Issues
+
+### Istiod Not Starting
+
+**Symptoms:**
+- Istiod pods in `CrashLoopBackOff`, `Error`, or `Pending` state
+- Sidecars unable to connect to control plane
+
+**Diagnosis:**
+
+```bash
+kubectl get pods -n istio-system -l app=istiod
+kubectl logs -n istio-system -l app=istiod --tail=100
+kubectl describe pod -n istio-system -l app=istiod
+```
+
+**Common causes:**
+
+<AccordionGroup>
+  <Accordion title="Invalid configuration">
+    Check Helm values for syntax errors:
+    
+    ```bash
+    kubectl get istio <name> -n <namespace> -o yaml | yq '.spec.values'
+    ```
+    
+    Review istiod logs for configuration validation errors.
+  </Accordion>
+  
+  <Accordion title="Certificate errors">
+    Verify CA certificates are valid:
+    
+    ```bash
+    kubectl get secret cacerts -n istio-system
+    kubectl get secret cacerts -n istio-system -o jsonpath='{.data.ca-cert\.pem}' | base64 -d | openssl x509 -text -noout
+    ```
+    
+    Check certificate expiration dates and validity.
+  </Accordion>
+  
+  <Accordion title="Resource limits">
+    Check if pods are being OOMKilled:
+    
+    ```bash
+    kubectl describe pod -n istio-system -l app=istiod | grep -i oom
+    kubectl top pod -n istio-system -l app=istiod
+    ```
+    
+    Increase memory limits if needed in `spec.values.pilot.resources`.
+  </Accordion>
+</AccordionGroup>
+
+### Istiod High CPU/Memory Usage
+
+**Symptoms:**
+- Istiod pods consuming excessive resources
+- Slow XDS configuration propagation
+- Pods being evicted
+
+**Diagnosis:**
+
+```bash
+kubectl top pod -n istio-system -l app=istiod
+kubectl logs -n istio-system -l app=istiod | grep -i "memory\|cpu"
+```
+
+**Resolution:**
+
+Increase resource limits:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  values:
+    pilot:
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2Gi
+        limits:
+          cpu: 2000m
+          memory: 4Gi
+```
+
+Or enable autoscaling:
+
+```yaml
+values:
+  pilot:
+    autoscaleEnabled: true
+    autoscaleMin: 2
+    autoscaleMax: 5
+```
+
+### XDS Configuration Not Syncing
+
+**Symptoms:**
+- Sidecars not receiving configuration updates
+- `istioctl proxy-status` shows proxies out of sync
+
+**Diagnosis:**
+
+```bash
+istioctl proxy-status
+istioctl proxy-config endpoint <pod>.<namespace> --cluster outbound
+```
+
+**Resolution:**
+
+```bash
+# Force configuration push
+kubectl delete pod -n istio-system -l app=istiod
+
+# Check for configuration conflicts
+kubectl logs -n istio-system -l app=istiod | grep -i "conflict\|reject"
+
+# Verify sidecar connectivity
+kubectl exec <pod> -n <namespace> -c istio-proxy -- curl -s localhost:15000/config_dump
+```
+
+## Data Plane Issues
+
+### Sidecar Injection Not Working
+
+**Symptoms:**
+- Pods deployed without sidecars
+- Only 1/1 containers in pods (expected 2/2 with sidecar)
+
+**Diagnosis:**
+
+```bash
+kubectl get pods -n <namespace>
+kubectl get namespace <namespace> --show-labels
+```
+
+**Common causes:**
+
+1. **Namespace not labeled correctly**
+
+   For default revision:
+   ```bash
+   kubectl label namespace <namespace> istio-injection=enabled
+   ```
+   
+   For specific revision:
+   ```bash
+   kubectl label namespace <namespace> istio.io/rev=<revision-name> --overwrite
+   kubectl label namespace <namespace> istio-injection-
+   ```
+
+2. **Webhook not configured**
+
+   ```bash
+   kubectl get mutatingwebhookconfigurations | grep istio
+   kubectl describe mutatingwebhookconfiguration istio-sidecar-injector-<revision>
+   ```
+
+3. **Pod annotations preventing injection**
+
+   Check for `sidecar.istio.io/inject: "false"` annotation:
+   ```bash
+   kubectl get pod <pod> -n <namespace> -o yaml | grep -A 5 annotations
+   ```
+
+### Service-to-Service Communication Failures
+
+**Symptoms:**
+- Services cannot communicate
+- Connection timeouts or refused connections
+- mTLS errors
+
+**Diagnosis:**
+
+```bash
+# Check sidecar connectivity
+kubectl exec <source-pod> -n <namespace> -c istio-proxy -- curl -v http://<destination-service>
+
+# Check mTLS status
+istioctl authn tls-check <source-pod>.<namespace> <destination-service>.<namespace>.svc.cluster.local
+
+# Verify routes
+istioctl proxy-config route <pod>.<namespace> --name <route-name>
+```
+
+**Common causes:**
+
+<AccordionGroup>
+  <Accordion title="mTLS misconfiguration">
+    Check PeerAuthentication policies:
+    
+    ```bash
+    kubectl get peerauthentication -A
+    kubectl describe peerauthentication <name> -n <namespace>
+    ```
+    
+    Ensure source and destination have compatible mTLS modes.
+  </Accordion>
+  
+  <Accordion title="Network policies blocking traffic">
+    Verify Kubernetes NetworkPolicies:
+    
+    ```bash
+    kubectl get networkpolicy -n <namespace>
+    kubectl describe networkpolicy <name> -n <namespace>
+    ```
+    
+    Ensure policies allow traffic between services.
+  </Accordion>
+  
+  <Accordion title="Sidecar not ready">
+    Check sidecar container status:
+    
+    ```bash
+    kubectl get pod <pod> -n <namespace> -o jsonpath='{.status.containerStatuses[?(@.name=="istio-proxy")]}'
+    ```
+    
+    Wait for sidecar to be ready before testing.
+  </Accordion>
+</AccordionGroup>
+
+## Ambient Mode Issues
+
+### ZTunnel Not Starting
+
+**Symptoms:**
+- ZTunnel DaemonSet pods in `CrashLoopBackOff`
+- Ambient workloads not connecting
+
+**Diagnosis:**
+
+```bash
+kubectl get pods -n ztunnel -l app=ztunnel
+kubectl logs -n ztunnel -l app=ztunnel --tail=100
+kubectl describe daemonset ztunnel -n ztunnel
+```
+
+**Common causes:**
+
+- **Node compatibility issues**: ZTunnel requires kernel 4.18+ with eBPF support
+- **CNI plugin conflicts**: Check IstioCNI is properly installed
+- **Resource constraints**: Verify nodes have sufficient resources
+
+**Resolution:**
+
+```bash
+# Check kernel version on nodes
+kubectl get nodes -o jsonpath='{.items[*].status.nodeInfo.kernelVersion}'
+
+# Verify IstioCNI installation
+kubectl get istiocni
+kubectl get pods -n istio-cni
+
+# Check ztunnel resources
+kubectl top pod -n ztunnel
+```
+
+### Ambient Workloads Not Communicating
+
+**Symptoms:**
+- Workloads in ambient mode cannot reach services
+- ZTunnel shows connection errors
+
+**Diagnosis:**
+
+```bash
+# Check ZTunnel workload status
+istioctl ztunnel-config workloads -n ztunnel
+
+# Verify namespace is in ambient mode
+kubectl get namespace <namespace> -o yaml | grep istio.io/dataplane-mode
+
+# Check ZTunnel logs for the workload
+kubectl logs -n ztunnel <ztunnel-pod> | grep <pod-name>
+```
+
+**Resolution:**
+
+```bash
+# Ensure namespace has ambient label
+kubectl label namespace <namespace> istio.io/dataplane-mode=ambient
+
+# Restart workloads to establish ZTunnel connection
+kubectl rollout restart deployment -n <namespace>
+
+# Verify workloads are enrolled
+istioctl ztunnel-config workloads -n ztunnel | grep <namespace>
+```
+
+### Waypoint Proxy Issues
+
+**Symptoms:**
+- Layer 7 policies not applied in ambient mode
+- Waypoint pods not starting
+
+**Diagnosis:**
+
+```bash
+kubectl get gateway -n <namespace>
+kubectl get pods -n <namespace> -l gateway.networking.k8s.io/gateway-name=<waypoint-name>
+kubectl logs -n <namespace> -l gateway.networking.k8s.io/gateway-name=<waypoint-name>
+```
+
+**Resolution:**
+
+Verify the waypoint gateway is properly configured and pods are running. Check Istio's [waypoint troubleshooting guide](https://istio.io/latest/docs/ambient/usage/troubleshoot-waypoint/).
+
+## Upgrade Issues
+
+### RevisionBased Upgrade Stuck
+
+**Symptoms:**
+- Old IstioRevision not deleting
+- Both old and new control planes running indefinitely
+
+**Diagnosis:**
+
+```bash
+kubectl get istiorevision
+kubectl get istio -o yaml | grep -A 5 inactiveRevisionDeletionGracePeriodSeconds
+istioctl proxy-status | grep -v "v<new-version>"
+```
+
+**Common causes:**
+
+- Workloads still using old revision
+- Grace period not expired
+- IstioRevisionTag pointing to old revision
+
+**Resolution:**
+
+```bash
+# Find workloads using old revision
+kubectl get pods -A -o json | jq -r '.items[] | select(.metadata.annotations."istio.io/rev" == "<old-revision>") | .metadata.namespace + "/" + .metadata.name'
+
+# Update namespace labels
+kubectl label namespace <namespace> istio.io/rev=<new-revision> --overwrite
+
+# Restart remaining workloads
+kubectl rollout restart deployment -n <namespace>
+```
+
+### Version Mismatch After Upgrade
+
+**Symptoms:**
+- Sidecars running old version after control plane upgrade
+- `istioctl proxy-status` shows version skew
+
+**Diagnosis:**
+
+```bash
+istioctl proxy-status
+kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {.metadata.annotations.istio\.io/rev}{"\n"}{end}'
+```
+
+**Resolution:**
+
+Restart workload pods to inject new sidecar version:
+
+```bash
+# Restart all deployments in a namespace
+kubectl rollout restart deployment -n <namespace>
+
+# Restart specific deployment
+kubectl rollout restart deployment <name> -n <namespace>
+
+# Watch rollout status
+kubectl rollout status deployment <name> -n <namespace>
+```
+
+## Monitoring and Observability Issues
+
+### Metrics Not Appearing
+
+**Symptoms:**
+- No metrics in Prometheus/OpenShift monitoring
+- Kiali shows no data
+
+**Diagnosis:**
+
+```bash
+# Check ServiceMonitor/PodMonitor
+kubectl get servicemonitor -n istio-system
+kubectl get podmonitor -n <namespace>
+
+# Verify metrics endpoint
+kubectl exec -n istio-system <istiod-pod> -- curl -s localhost:15014/metrics
+```
+
+**Resolution:**
+
+Ensure monitoring resources are properly configured (see [Monitoring](/operations/monitoring)).
+
+### Traces Not Collected
+
+**Symptoms:**
+- No traces in Tempo/Jaeger
+- Kiali traces tab empty
+
+**Diagnosis:**
+
+```bash
+# Check Telemetry resource
+kubectl get telemetry -A
+kubectl describe telemetry <name> -n <namespace>
+
+# Verify tracing configuration
+kubectl get istio <name> -n <namespace> -o yaml | grep -A 10 enableTracing
+```
+
+**Resolution:**
+
+Configure distributed tracing (see [Monitoring](/operations/monitoring)).
+
+## Useful Debug Commands
+
+<CodeGroup>
+```bash Proxy Configuration
+# View all proxy config
+kubectl exec <pod> -n <namespace> -c istio-proxy -- curl localhost:15000/config_dump
+
+# View clusters
+istioctl proxy-config cluster <pod>.<namespace>
+
+# View listeners  
+istioctl proxy-config listener <pod>.<namespace>
+
+# View routes
+istioctl proxy-config route <pod>.<namespace>
+
+# View endpoints
+istioctl proxy-config endpoint <pod>.<namespace>
+```
+
+```bash Analyze Istio Configuration
+# Run Istio configuration analysis
+istioctl analyze -A
+
+# Analyze specific namespace
+istioctl analyze -n <namespace>
+
+# Verbose output
+istioctl analyze -A --verbose
+```
+
+```bash Check mTLS Status
+# Check mTLS for all services
+istioctl authn tls-check
+
+# Check specific pod
+istioctl authn tls-check <pod>.<namespace>
+
+# Check pod to service
+istioctl authn tls-check <pod>.<namespace> <service>.<namespace>.svc.cluster.local
+```
+
+```bash Debug Ambient Mode
+# List ZTunnel workloads
+istioctl ztunnel-config workloads -n ztunnel
+
+# Get workload details
+istioctl ztunnel-config workload <pod>.<namespace> -n ztunnel
+
+# View ZTunnel logs for specific workload
+kubectl logs -n ztunnel <ztunnel-pod> | grep <workload-name>
+```
+</CodeGroup>
+
+## Getting Help
+
+If you're still experiencing issues:
+
+<CardGroup cols={2}>
+  <Card title="Istio Troubleshooting" icon="book" href="https://istio.io/latest/docs/ops/diagnostic-tools/">
+    Official Istio troubleshooting documentation
+  </Card>
+  
+  <Card title="ZTunnel Troubleshooting" icon="network-wired" href="https://istio.io/latest/docs/ambient/usage/troubleshoot-ztunnel/">
+    Troubleshoot ZTunnel issues in ambient mode
+  </Card>
+  
+  <Card title="Waypoint Troubleshooting" icon="route" href="https://istio.io/latest/docs/ambient/usage/troubleshoot-waypoint/">
+    Troubleshoot waypoint proxy issues
+  </Card>
+  
+  <Card title="GitHub Issues" icon="github" href="https://github.com/istio-ecosystem/sail-operator/issues">
+    Report Sail Operator bugs or ask questions
+  </Card>
+</CardGroup>
+
+## Related Resources
+
+- [Upgrades](/operations/upgrades) - Upgrade procedures and strategies
+- [Monitoring](/operations/monitoring) - Set up observability
+- [Certificate Management](/operations/certificate-management) - Manage certificates and troubleshoot mTLS issues

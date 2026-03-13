@@ -1,0 +1,623 @@
+---
+title: ZTunnelValues
+description: Helm values configuration for Istio ztunnel component
+icon: tunnel
+---
+
+The `ZTunnelValues` type defines the Helm values structure for configuring the Istio ztunnel component. It is used in the `ZTunnel` custom resource and is required for Istio ambient mesh mode.
+
+## Overview
+
+ZTunnel (zero-trust tunnel) is a core component of Istio's ambient mesh that provides L4 networking and security features. It runs as a DaemonSet on every node and handles:
+
+- Secure L4 (TCP) communication using mTLS
+- Traffic routing within the ambient mesh
+- Identity-based authorization at L4
+- Integration with waypoint proxies for L7 features
+
+<Note>
+  ZTunnel is only used in ambient mesh mode. For sidecar mode, you don't need to deploy a ZTunnel resource.
+</Note>
+
+## Configuration Fields
+
+### ZTunnel Configuration
+
+<ParamField path="ztunnel" type="ZTunnelConfig">
+  Configuration for the ztunnel component.
+  
+  <Expandable title="ZTunnel Configuration Fields">
+    <ParamField path="ztunnel.hub" type="string">
+      Docker hub for ztunnel container images. Defaults to the global hub if not specified.
+      
+      ```yaml
+      ztunnel:
+        hub: docker.io/istio
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.tag" type="string">
+      Container image tag to pull. Defaults to the global tag if not specified.
+      
+      ```yaml
+      ztunnel:
+        tag: 1.29.1
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.variant" type="string">
+      Container image variant. Valid values: `"debug"`, `"distroless"`. Unset uses the default.
+      
+      ```yaml
+      ztunnel:
+        variant: distroless
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.image" type="string">
+      Image name to pull from. Image will be `Hub/Image:Tag-Variant`.
+      If Image contains a "/", it replaces the entire image in the pod.
+      
+      ```yaml
+      ztunnel:
+        image: ztunnel
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.imagePullPolicy" type="PullPolicy">
+      Image pull policy. Valid values: `Always`, `Never`, `IfNotPresent`.
+      
+      ```yaml
+      ztunnel:
+        imagePullPolicy: IfNotPresent
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.imagePullSecrets" type="[]string">
+      List of secret names for pulling images from private registries.
+      
+      ```yaml
+      ztunnel:
+        imagePullSecrets:
+          - registry-credentials
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.network" type="string">
+      Network this cluster belongs to. Corresponds to networks in the mesh networks map.
+      
+      ```yaml
+      ztunnel:
+        network: network1
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.affinity" type="Affinity">
+      Kubernetes affinity settings for ztunnel pods.
+      
+      ```yaml
+      ztunnel:
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+              - matchExpressions:
+                - key: kubernetes.io/os
+                  operator: In
+                  values:
+                  - linux
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.nodeSelector" type="map[string]string">
+      Kubernetes node selector settings.
+      
+      ```yaml
+      ztunnel:
+        nodeSelector:
+          kubernetes.io/os: linux
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.tolerations" type="[]Toleration">
+      Tolerations for the ztunnel pod.
+      
+      ```yaml
+      ztunnel:
+        tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.podAnnotations" type="map[string]string">
+      Annotations added to each ztunnel pod. Default annotations enable Prometheus scraping.
+      
+      ```yaml
+      ztunnel:
+        podAnnotations:
+          prometheus.io/scrape: "true"
+          prometheus.io/port: "15020"
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.podLabels" type="map[string]string">
+      Additional labels to apply on the pod level.
+      
+      ```yaml
+      ztunnel:
+        podLabels:
+          app: ztunnel
+          version: v1
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.resources" type="ResourceRequirements">
+      Kubernetes resource requests and limits for ztunnel pods.
+      
+      ```yaml
+      ztunnel:
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.resourceQuotas" type="ResourceQuotas">
+      Resource quotas configuration for ztunnel.
+      
+      ```yaml
+      ztunnel:
+        resourceQuotas:
+          enabled: true
+          pods: 200
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.env" type="map[string]string">
+      Environment variables mapping for the ztunnel pod.
+      
+      ```yaml
+      ztunnel:
+        env:
+          RUST_LOG: info
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.volumeMounts" type="[]VolumeMount">
+      Additional volumeMounts to the ztunnel container.
+      
+      ```yaml
+      ztunnel:
+        volumeMounts:
+        - name: custom-certs
+          mountPath: /etc/certs
+          readOnly: true
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.volumes" type="[]Volume">
+      Additional volumes to add to the ztunnel pod.
+      
+      ```yaml
+      ztunnel:
+        volumes:
+        - name: custom-certs
+          secret:
+            secretName: ztunnel-certs
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.logLevel" type="string">
+      Configuration log level of ztunnel binary. Valid values: `trace`, `debug`, `info`, `warn`, `error`.
+      Defaults to `info`.
+      
+      ```yaml
+      ztunnel:
+        logLevel: debug
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.logAsJSON" type="bool">
+      Output logs in JSON format by adding `--log_as_json` argument.
+      
+      ```yaml
+      ztunnel:
+        logAsJSON: true
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.terminationGracePeriodSeconds" type="int64" default="30">
+      Defines:
+      1. How many seconds Kubernetes waits for ztunnel pod to gracefully exit before force termination
+      2. How many seconds ztunnel waits to drain its connections (this value - 1 sec)
+      
+      ```yaml
+      ztunnel:
+        terminationGracePeriodSeconds: 60
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.revision" type="string">
+      Configures the revision this control plane is part of.
+      
+      ```yaml
+      ztunnel:
+        revision: canary
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.caAddress" type="string">
+      The address of the CA for CSR (Certificate Signing Request).
+      
+      ```yaml
+      ztunnel:
+        caAddress: istiod.istio-system.svc:15012
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.xdsAddress" type="string">
+      The customized XDS address to retrieve configuration.
+      
+      ```yaml
+      ztunnel:
+        xdsAddress: istiod.istio-system.svc:15012
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.istioNamespace" type="string">
+      Namespace for the Istio control plane components.
+      
+      ```yaml
+      ztunnel:
+        istioNamespace: istio-system
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.multiCluster" type="MultiClusterConfig">
+      Settings for multi-cluster configuration.
+      
+      ```yaml
+      ztunnel:
+        multiCluster:
+          enabled: true
+          clusterName: cluster1
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.seLinuxOptions" type="SELinuxOptions">
+      Set SELinux options for the ztunnel pod.
+      
+      ```yaml
+      ztunnel:
+        seLinuxOptions:
+          type: spc_t
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.updateStrategy" type="DaemonSetUpdateStrategy">
+      Defines the update strategy when the version in the ZTunnel CR is updated.
+      
+      ```yaml
+      ztunnel:
+        updateStrategy:
+          type: RollingUpdate
+          rollingUpdate:
+            maxUnavailable: 1
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.dnsPolicy" type="DNSPolicy">
+      DNS policy for the ztunnel pod. Valid values: `ClusterFirstWithHostNet`, `ClusterFirst`, `Default`, `None`.
+      
+      ```yaml
+      ztunnel:
+        dnsPolicy: ClusterFirstWithHostNet
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.dnsConfig" type="PodDNSConfig">
+      DNS config for the ztunnel pod.
+      
+      ```yaml
+      ztunnel:
+        dnsConfig:
+          nameservers:
+          - 8.8.8.8
+      ```
+    </ParamField>
+    
+    <ParamField path="ztunnel.peerCaCrl" type="PeerCaCrlConfig">
+      Certificate Revocation List (CRL) support for plugged-in CAs.
+      When enabled, ztunnel checks certificates against the CRL.
+      
+      ```yaml
+      ztunnel:
+        peerCaCrl:
+          enabled: true
+      ```
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Global Configuration
+
+<ParamField path="global" type="ZTunnelGlobalConfig">
+  Subset of global configuration applicable to ztunnel.
+  
+  <Expandable title="ZTunnel Global Fields">
+    <ParamField path="global.hub" type="string">
+      Docker hub for Istio images. Inherited by ztunnel if not overridden.
+      
+      ```yaml
+      global:
+        hub: docker.io/istio
+      ```
+    </ParamField>
+    
+    <ParamField path="global.tag" type="string">
+      Tag for Istio docker images. Inherited by ztunnel if not overridden.
+      
+      ```yaml
+      global:
+        tag: 1.29.1
+      ```
+    </ParamField>
+    
+    <ParamField path="global.variant" type="string">
+      Variant of the Istio container images. Inherited by ztunnel if not overridden.
+    </ParamField>
+    
+    <ParamField path="global.imagePullPolicy" type="PullPolicy">
+      Image pull policy. Inherited by ztunnel if not overridden.
+    </ParamField>
+    
+    <ParamField path="global.imagePullSecrets" type="[]string">
+      ImagePullSecrets for private registries. Inherited by ztunnel if not overridden.
+    </ParamField>
+    
+    <ParamField path="global.logAsJSON" type="bool">
+      Output logs in JSON format.
+    </ParamField>
+    
+    <ParamField path="global.logging" type="GlobalLoggingConfig">
+      Global logging configuration.
+    </ParamField>
+    
+    <ParamField path="global.platform" type="string">
+      Platform where Istio is deployed. Valid values: `"openshift"`, `"gcp"`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Common Configuration Examples
+
+### Basic Ambient Mesh Configuration
+
+```yaml
+values:
+  ztunnel:
+    logLevel: info
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+  global:
+    hub: docker.io/istio
+    tag: 1.29.1
+```
+
+### Multi-Cluster Ambient Mesh
+
+```yaml
+values:
+  ztunnel:
+    network: network1
+    multiCluster:
+      enabled: true
+      clusterName: cluster1
+    caAddress: istiod.istio-system.svc:15012
+  global:
+    hub: docker.io/istio
+```
+
+### Production Configuration
+
+```yaml
+values:
+  ztunnel:
+    logLevel: warn
+    logAsJSON: true
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+    terminationGracePeriodSeconds: 60
+    updateStrategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 10%
+    podAnnotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "15020"
+  global:
+    logAsJSON: true
+```
+
+### Resource-Constrained Environment
+
+```yaml
+values:
+  ztunnel:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    resourceQuotas:
+      enabled: true
+      pods: 100
+```
+
+### OpenShift Configuration
+
+```yaml
+values:
+  ztunnel:
+    seLinuxOptions:
+      type: spc_t
+    logLevel: info
+  global:
+    platform: openshift
+```
+
+### Custom DNS Configuration
+
+```yaml
+values:
+  ztunnel:
+    dnsPolicy: ClusterFirst
+    dnsConfig:
+      nameservers:
+      - 10.96.0.10
+      searches:
+      - istio-system.svc.cluster.local
+      - svc.cluster.local
+      - cluster.local
+      options:
+      - name: ndots
+        value: "2"
+```
+
+### Debug Configuration
+
+```yaml
+values:
+  ztunnel:
+    logLevel: trace
+    logAsJSON: true
+    env:
+      RUST_LOG: "trace"
+      RUST_BACKTRACE: "1"
+  global:
+    variant: debug
+```
+
+### High Availability Configuration
+
+```yaml
+values:
+  ztunnel:
+    resources:
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+      limits:
+        cpu: 4000m
+        memory: 4Gi
+    updateStrategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 1
+    tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: node.kubernetes.io/not-ready
+      operator: Exists
+      effect: NoSchedule
+```
+
+### Certificate Revocation List (CRL) Configuration
+
+```yaml
+values:
+  ztunnel:
+    peerCaCrl:
+      enabled: true
+    volumeMounts:
+    - name: crl-volume
+      mountPath: /etc/crl
+      readOnly: true
+    volumes:
+    - name: crl-volume
+      configMap:
+        name: istio-ca-crl
+```
+
+### Custom Revision Configuration
+
+```yaml
+values:
+  ztunnel:
+    revision: canary
+    caAddress: istiod-canary.istio-system.svc:15012
+    xdsAddress: istiod-canary.istio-system.svc:15012
+    istioNamespace: istio-system
+```
+
+## Performance Tuning
+
+### CPU and Memory Guidelines
+
+- **Development/Testing**: 100m CPU, 256Mi memory
+- **Production (small)**: 200m CPU, 512Mi memory
+- **Production (medium)**: 500m CPU, 1Gi memory
+- **Production (large)**: 1000m+ CPU, 2Gi+ memory
+
+<Note>
+  Ztunnel resource requirements scale with the number of connections and traffic throughput.
+  Monitor actual usage and adjust accordingly.
+</Note>
+
+### Update Strategy Recommendations
+
+```yaml
+# Conservative - minimal disruption
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+
+# Balanced - faster updates with acceptable risk
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 10%
+
+# Aggressive - fastest updates (not recommended for production)
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 25%
+```
+
+## References
+
+<CardGroup cols={2}>
+  <Card title="Ambient Mesh Overview" icon="layer-group" href="https://istio.io/latest/docs/ambient/overview/">
+    Introduction to Istio ambient mesh
+  </Card>
+  <Card title="ZTunnel Architecture" icon="diagram-project" href="https://istio.io/latest/docs/ambient/architecture/">
+    ZTunnel architecture and design
+  </Card>
+  <Card title="ZTunnel Resource" icon="file-code" href="/api/ztunnel">
+    ZTunnel custom resource documentation
+  </Card>
+  <Card title="Ambient Deployment" icon="rocket" href="/deployment/ambient-mode">
+    Deploying Istio in ambient mode
+  </Card>
+</CardGroup>

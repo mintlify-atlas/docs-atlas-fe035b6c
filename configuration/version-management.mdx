@@ -1,0 +1,387 @@
+---
+title: Version Management
+description: Understanding Istio version support and selection in the Sail Operator
+---
+
+The Sail Operator manages multiple Istio versions, allowing you to select and upgrade versions declaratively through the Istio resource.
+
+## Supported Versions
+
+The operator supports multiple Istio versions simultaneously. The supported versions are defined in the operator's configuration.
+
+### Current Supported Versions
+
+As of the latest release, the operator supports:
+
+- **v1.29.x** - Latest stable release
+  - v1.29-latest (alias for v1.29.1)
+  - v1.29.1
+  - v1.29.0
+
+- **v1.28.x** - Previous stable release
+  - v1.28-latest (alias for v1.28.5)
+  - v1.28.5, v1.28.4, v1.28.3, v1.28.2, v1.28.1, v1.28.0
+
+- **v1.27.x** - Older stable release
+  - v1.27-latest (alias for v1.27.8)
+  - v1.27.8, v1.27.7, v1.27.6, v1.27.5, v1.27.4, v1.27.3, v1.27.2, v1.27.1, v1.27.0
+
+- **master** - Development builds (not for production)
+
+### Version Support Policy
+
+The Sail Operator follows Istio's support model:
+
+- **n-2 support** - Current release plus two previous minor versions
+- **Latest patch** - New operator releases include latest patches
+- **EOL versions** - End-of-life versions remain valid inputs but are not installable
+
+<Info>
+The operator supports the current Istio release and the two previous minor releases. For example, when 1.29 is current, versions 1.28 and 1.27 are also supported.
+</Info>
+
+## Specifying Versions
+
+### Explicit Version
+
+Specify an exact version:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1  # Exact version
+  namespace: istio-system
+```
+
+### Latest Patch Version
+
+Use the `-latest` alias to automatically use the latest patch:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29-latest  # Automatically resolves to v1.29.1
+  namespace: istio-system
+```
+
+<Note>
+The -latest alias is updated when you upgrade the operator. It provides a way to automatically get patch updates without changing the Istio resource.
+</Note>
+
+## Version Resolution
+
+The operator resolves versions in the following order:
+
+1. **Explicit version** - If specified exactly (e.g., v1.29.1)
+2. **Latest alias** - Resolves `-latest` to current patch version
+3. **Version validation** - Ensures version is supported
+4. **Chart retrieval** - Downloads Helm charts for the version
+
+### Version Metadata
+
+Each version includes:
+
+- **Name** - Version identifier (e.g., v1.29.1)
+- **Repo** - Istio GitHub repository
+- **Commit** - Git commit hash for the release
+- **Charts** - URLs to Helm charts (base, istiod, cni, ztunnel, gateway)
+
+```yaml
+# From versions.yaml
+- name: v1.29.1
+  version: 1.29.1
+  repo: https://github.com/istio/istio
+  commit: 1.29.1
+  charts:
+    - https://istio-release.storage.googleapis.com/charts/base-1.29.1.tgz
+    - https://istio-release.storage.googleapis.com/charts/istiod-1.29.1.tgz
+    - https://istio-release.storage.googleapis.com/charts/gateway-1.29.1.tgz
+    - https://istio-release.storage.googleapis.com/charts/cni-1.29.1.tgz
+    - https://istio-release.storage.googleapis.com/charts/ztunnel-1.29.1.tgz
+```
+
+## Version Compatibility
+
+### Operator Version
+
+The operator version determines which Istio versions are supported:
+
+```bash
+# Check operator version
+kubectl get deployment -n istio-system istio-operator -o jsonpath='{.spec.template.spec.containers[0].image}'
+```
+
+### Control Plane to Data Plane
+
+Istio control plane and data plane versions should match:
+
+- **Control plane** - istiod version
+- **Data plane** - sidecar proxy version
+
+<Warning>
+Mismatch between control plane and data plane versions can cause compatibility issues. Always upgrade control plane first, then migrate workloads.
+</Warning>
+
+### Multi-Version Support
+
+You can run multiple Istio versions simultaneously:
+
+```yaml
+# Version 1.28
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: stable
+spec:
+  version: v1.28.5
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+---
+# Version 1.29
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: latest
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+```
+
+## Version Updates
+
+### Patch Updates
+
+Update to a new patch version:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1  # Updated from v1.29.0
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace  # Recommended for patches
+```
+
+### Minor Version Upgrades
+
+Upgrade to a new minor version:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1  # Upgraded from v1.28.x
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased  # Recommended for minor upgrades
+```
+
+<Info>
+Use RevisionBased strategy for minor version upgrades to enable canary testing and safe rollback.
+</Info>
+
+## Checking Installed Versions
+
+### Istio Resource Version
+
+```bash
+# Check configured version
+kubectl get istio default -o jsonpath='{.spec.version}'
+```
+
+### Running Control Plane Version
+
+```bash
+# Check istiod version
+kubectl exec -n istio-system deploy/istiod -- pilot-discovery version
+
+# Check via endpoint
+kubectl exec -n istio-system deploy/istiod -- curl localhost:15014/version
+```
+
+### Data Plane Versions
+
+```bash
+# Check proxy versions across all namespaces
+istioctl proxy-status
+
+# Check specific pod's proxy version
+kubectl exec <pod> -c istio-proxy -- pilot-agent version
+```
+
+### Version Summary
+
+```bash
+# Get comprehensive version info
+istioctl version
+```
+
+Output:
+```
+client version: 1.29.1
+control plane version: 1.29.1
+data plane version: 1.29.1 (2 proxies), 1.28.5 (1 proxies)
+```
+
+## EOL Versions
+
+End-of-life versions are marked in the operator but cannot be installed:
+
+```yaml
+# From versions.yaml
+- name: v1.26.8
+  eol: true  # Cannot be installed
+```
+
+Attempting to install an EOL version results in an error:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.26.8  # Error: version is EOL
+  namespace: istio-system
+```
+
+<Warning>
+EOL versions remain valid in the API for backward compatibility, but the operator will not deploy them. Upgrade to a supported version.
+</Warning>
+
+## Custom Version Configuration
+
+For vendor distributions or air-gapped environments, you can customize the versions file:
+
+```bash
+# Set custom versions file
+export VERSIONS_YAML_FILE=/path/to/custom/versions.yaml
+
+# Deploy operator
+make deploy
+```
+
+Custom versions.yaml format:
+
+```yaml
+versions:
+  - name: v1.29-custom
+    version: 1.29.1-custom
+    repo: https://internal-git.example.com/istio
+    commit: abc123
+    charts:
+      - https://internal-registry.example.com/charts/base-1.29.1.tgz
+      - https://internal-registry.example.com/charts/istiod-1.29.1.tgz
+      # ... more charts
+```
+
+## Version Profiles
+
+Each version includes its own set of profiles:
+
+```bash
+# List profiles for a version
+ls /var/lib/istio/resources/v1.29.1/profiles/
+```
+
+Output:
+```
+ambient.yaml
+default.yaml
+demo.yaml
+empty.yaml
+openshift.yaml
+openshift-ambient.yaml
+preview.yaml
+remote.yaml
+```
+
+Profiles may differ between versions as features are added or removed.
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Use Latest Patches" icon="shield-check">
+    Always run the latest patch version for security and bug fixes.
+  </Card>
+  <Card title="Test Upgrades" icon="flask">
+    Test version upgrades in development before production.
+  </Card>
+  <Card title="Plan Upgrades" icon="calendar">
+    Upgrade to new minor versions within their support window.
+  </Card>
+  <Card title="Monitor Compatibility" icon="link">
+    Ensure control plane and data plane versions stay compatible.
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### Version Not Found
+
+```bash
+# List all supported versions
+kubectl get crd istios.sailoperator.io -o yaml | \
+  grep -A 100 "enum:" | grep "v1\." | head -20
+
+# Check operator's version configuration
+kubectl exec -n istio-system deploy/istio-operator -- \
+  cat /var/lib/istio/versions.yaml
+```
+
+### Version Mismatch
+
+```bash
+# Check all component versions
+istioctl version
+
+# Check for outdated proxies
+istioctl proxy-status | grep -v "1.29.1"
+
+# Trigger proxy restart
+kubectl rollout restart deployment -n <namespace>
+```
+
+### Charts Not Downloaded
+
+```bash
+# Check IstioRevision status
+kubectl describe istiorevision <name>
+
+# Check operator logs
+kubectl logs -n istio-system -l app=istio-operator | grep -i chart
+
+# Verify chart URL accessibility
+curl -I https://istio-release.storage.googleapis.com/charts/base-1.29.1.tgz
+```
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Update Strategies" icon="arrows-rotate" href="/configuration/update-strategies">
+    Choose the right update strategy for version changes
+  </Card>
+  <Card title="Upgrades" icon="arrow-up" href="/operations/upgrades">
+    Step-by-step upgrade procedures
+  </Card>
+  <Card title="Istio Resource" icon="cube" href="/concepts/istio-resource">
+    Understanding the Istio custom resource
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Common issues and solutions
+  </Card>
+</CardGroup>

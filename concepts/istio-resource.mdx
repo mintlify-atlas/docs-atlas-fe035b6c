@@ -1,0 +1,513 @@
+---
+title: Istio Resource
+description: The primary resource for managing Istio control plane deployments
+---
+
+## Overview
+
+The `Istio` resource is the primary API for deploying and managing an Istio service mesh control plane. It is a cluster-scoped resource that represents the desired state of your Istio installation.
+
+<Info>
+  Think of the `Istio` resource as analogous to a Kubernetes `Deployment` — you declare what you want, and the operator manages the underlying resources to achieve that state.
+</Info>
+
+## Basic Example
+
+Here's a minimal `Istio` resource:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+```
+
+This creates an Istio control plane in the `istio-system` namespace using the default configuration.
+
+## Spec Fields
+
+The `Istio` resource spec contains the following fields:
+
+### version
+
+<ParamField path="spec.version" type="string" required>
+  The Istio version to install. Must be one of the supported versions.
+  
+  **Format**: `v1.29.1` (specific patch) or `v1.29-latest` (latest patch of that minor version)
+  
+  **Default**: `v1.29.1`
+  
+  **Examples**:
+  - `v1.29.1` - Install specific version
+  - `v1.29-latest` - Install latest v1.29.x patch
+  - `v1.28.5` - Install older supported version
+</ParamField>
+
+### namespace
+
+<ParamField path="spec.namespace" type="string" required>
+  The namespace where Istio control plane components will be installed.
+  
+  **Default**: `istio-system`
+  
+  **Immutable**: This field cannot be changed after resource creation. To move to a different namespace, you must delete and recreate the resource.
+  
+  **Validation**: Must match `spec.values.global.istioNamespace` if specified.
+</ParamField>
+
+### updateStrategy
+
+<ParamField path="spec.updateStrategy" type="object">
+  Defines how the control plane should be updated when the version changes.
+  
+  **Default**: `{type: "InPlace"}`
+</ParamField>
+
+#### updateStrategy.type
+
+<ParamField path="spec.updateStrategy.type" type="string">
+  The type of update strategy.
+  
+  **Options**:
+  - `InPlace`: Update the control plane in place (replaces existing resources)
+  - `RevisionBased`: Create a new revision for canary upgrades
+  
+  **Default**: `InPlace`
+</ParamField>
+
+#### updateStrategy.inactiveRevisionDeletionGracePeriodSeconds
+
+<ParamField path="spec.updateStrategy.inactiveRevisionDeletionGracePeriodSeconds" type="integer">
+  How long to wait (in seconds) before deleting an inactive revision after workloads have stopped using it.
+  
+  **Default**: `30`
+  
+  **Minimum**: `0`
+  
+  **Only applies to**: `RevisionBased` strategy
+</ParamField>
+
+#### updateStrategy.updateWorkloads
+
+<ParamField path="spec.updateStrategy.updateWorkloads" type="boolean">
+  Whether to automatically move workloads to a new revision.
+  
+  **Default**: `false`
+  
+  **When true**: Operator automatically updates workload labels to use the new revision
+  
+  **When false**: User must manually update labels on namespaces/pods
+  
+  **Only applies to**: `RevisionBased` strategy
+</ParamField>
+
+### profile
+
+<ParamField path="spec.profile" type="string">
+  The built-in installation configuration profile to use.
+  
+  **Options**: `ambient`, `default`, `demo`, `empty`, `openshift`, `openshift-ambient`, `preview`, `remote`, `stable`
+  
+  **Default behavior**: The `default` profile is always applied. On OpenShift, the `openshift` profile is also applied on top of `default`.
+</ParamField>
+
+### values
+
+<ParamField path="spec.values" type="object">
+  Helm values to pass to the Istio charts. This field exposes all configuration options from Istio's Helm charts.
+  
+  See the [Helm Values](/configuration/helm-values) documentation for details.
+</ParamField>
+
+## Status Fields
+
+The `Istio` resource status provides information about the current state:
+
+### observedGeneration
+
+<ResponseField name="status.observedGeneration" type="integer">
+  The most recent generation observed by the controller. When this matches `metadata.generation`, the status reflects the latest spec.
+</ResponseField>
+
+### state
+
+<ResponseField name="status.state" type="string">
+  A high-level summary of the resource state.
+  
+  **Possible values**:
+  - `Healthy` - Control plane is fully reconciled and ready
+  - `ReconcileError` - Reconciliation failed
+  - `IstiodNotReady` - Control plane reconciled but istiod not ready
+  - `ActiveRevisionNotFound` - Active revision not found
+  - `IstioCNINotFound` - Required IstioCNI dependency not found
+  - `IstioCNINotHealthy` - Required IstioCNI dependency not healthy
+</ResponseField>
+
+### conditions
+
+<ResponseField name="status.conditions" type="array">
+  Detailed conditions about the resource state.
+  
+  **Condition Types**:
+  - `Reconciled` - Whether reconciliation succeeded
+  - `Ready` - Whether control plane is ready
+  - `DependenciesHealthy` - Whether dependencies (IstioCNI, ZTunnel) are healthy
+</ResponseField>
+
+### activeRevisionName
+
+<ResponseField name="status.activeRevisionName" type="string">
+  The name of the currently active `IstioRevision` resource.
+</ResponseField>
+
+### revisions
+
+<ResponseField name="status.revisions" type="object">
+  Summary information about associated IstioRevisions.
+  
+  **Fields**:
+  - `total` (integer) - Total number of IstioRevisions
+  - `ready` (integer) - Number of ready IstioRevisions
+  - `inUse` (integer) - Number of IstioRevisions in use by workloads
+</ResponseField>
+
+## Examples
+
+### InPlace Update Strategy
+
+Simple in-place updates with custom resource limits:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+    inactiveRevisionDeletionGracePeriodSeconds: 30
+  values:
+    pilot:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 1024Mi
+        limits:
+          cpu: 500m
+          memory: 2048Mi
+```
+
+### RevisionBased Update Strategy
+
+Canary updates with automatic workload migration:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+    updateWorkloads: true
+    inactiveRevisionDeletionGracePeriodSeconds: 300  # 5 minutes
+```
+
+### Ambient Mode Configuration
+
+Configuring Istio for ambient mesh:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  values:
+    pilot:
+      cni:
+        enabled: true
+```
+
+<Warning>
+  When using ambient mode, you must also deploy the `IstioCNI` and `ZTunnel` resources. The control plane will not be ready until these dependencies are healthy.
+</Warning>
+
+### OpenShift Configuration
+
+Configuring for OpenShift with custom security:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: openshift
+  values:
+    global:
+      platform: openshift
+```
+
+### High Availability Setup
+
+Configuring istiod for high availability:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    pilot:
+      replicaCount: 3
+      autoscaleEnabled: false
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: istiod
+            topologyKey: kubernetes.io/hostname
+```
+
+## Common Patterns
+
+### Checking Resource Status
+
+Get the current state of your Istio installation:
+
+```bash
+kubectl get istio default -o yaml
+```
+
+View just the status:
+
+```bash
+kubectl get istio default -o jsonpath='{.status.state}'
+```
+
+Check if ready:
+
+```bash
+kubectl wait --for=condition=Ready istio/default --timeout=300s
+```
+
+### Updating to a New Version
+
+Update the version field:
+
+```bash
+kubectl patch istio default --type='merge' -p '{"spec":{"version":"v1.29.1"}}'
+```
+
+Watch the update progress:
+
+```bash
+kubectl get istio default -w
+```
+
+### Viewing Active Revision
+
+See which revision is active:
+
+```bash
+kubectl get istio default -o jsonpath='{.status.activeRevisionName}'
+```
+
+View the IstioRevision details:
+
+```bash
+kubectl get istiorevision <revision-name> -o yaml
+```
+
+### Inspecting Final Configuration
+
+The operator stores the final rendered Helm values in a ConfigMap:
+
+```bash
+# For InPlace strategy
+kubectl get configmap values -n istio-system -o yaml
+
+# For RevisionBased strategy
+kubectl get configmap values-<revision-name> -n istio-system -o yaml
+```
+
+## Validation Rules
+
+The `Istio` resource includes several validation rules:
+
+<AccordionGroup>
+  <Accordion title="Namespace Immutability">
+    The `spec.namespace` field cannot be changed after creation. This is enforced by the CRD validation rule:
+    
+    ```yaml
+    rule: "self == oldSelf"
+    message: "Value is immutable"
+    ```
+  </Accordion>
+  
+  <Accordion title="IstioNamespace Consistency">
+    If `spec.values.global.istioNamespace` is set, it must match `spec.namespace`. This is enforced by:
+    
+    ```yaml
+    rule: "!has(self.values) || !has(self.values.global) || !has(self.values.global.istioNamespace) || self.values.global.istioNamespace == self.__namespace__"
+    message: "spec.values.global.istioNamespace must match spec.namespace"
+    ```
+  </Accordion>
+  
+  <Accordion title="Version Validation">
+    The version must be one of the supported Istio versions. The list of valid versions is maintained in the CRD enum validation.
+  </Accordion>
+</AccordionGroup>
+
+## Relationship to IstioRevision
+
+When you create an `Istio` resource, the operator automatically creates a corresponding `IstioRevision` resource:
+
+- **InPlace strategy**: Creates an IstioRevision named `default` (or a version-based name)
+- **RevisionBased strategy**: Creates an IstioRevision with a name based on version (e.g., `default-v1-29-1`)
+
+The `Istio` resource is the user-facing API, while `IstioRevision` represents the actual deployed instance. This separation enables:
+
+- Canary upgrades with multiple revisions
+- Independent lifecycle management of revisions
+- Gradual migration of workloads between versions
+
+<Info>
+  You typically don't need to interact with `IstioRevision` resources directly. The `Istio` resource controller manages them for you.
+</Info>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Use Revision-Based Updates for Production">
+    For production environments, use `RevisionBased` update strategy to enable zero-downtime canary upgrades:
+    
+    ```yaml
+    spec:
+      updateStrategy:
+        type: RevisionBased
+        inactiveRevisionDeletionGracePeriodSeconds: 300
+    ```
+  </Accordion>
+  
+  <Accordion title="Specify Resource Limits">
+    Always configure resource requests and limits for istiod:
+    
+    ```yaml
+    spec:
+      values:
+        pilot:
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2048Mi
+            limits:
+              cpu: 1000m
+              memory: 4096Mi
+    ```
+  </Accordion>
+  
+  <Accordion title="Use Version Aliases for Auto-Updates">
+    Use `-latest` suffix to automatically get patch updates:
+    
+    ```yaml
+    spec:
+      version: v1.29-latest  # Gets latest 1.29.x automatically
+    ```
+  </Accordion>
+  
+  <Accordion title="Monitor Status Conditions">
+    Set up monitoring alerts on the `Ready` condition:
+    
+    ```bash
+    kubectl get istio default -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+### Resource Not Becoming Ready
+
+1. Check the status conditions:
+   ```bash
+   kubectl get istio default -o yaml | grep -A 10 conditions
+   ```
+
+2. Check the IstioRevision status:
+   ```bash
+   kubectl get istiorevision
+   kubectl describe istiorevision <revision-name>
+   ```
+
+3. Check istiod logs:
+   ```bash
+   kubectl logs -n istio-system -l app=istiod
+   ```
+
+### Version Update Not Applied
+
+1. Verify the version is supported:
+   ```bash
+   kubectl explain istio.spec.version
+   ```
+
+2. Check for validation errors:
+   ```bash
+   kubectl describe istio default
+   ```
+
+3. For RevisionBased strategy, check if old revision is still in use:
+   ```bash
+   kubectl get istiorevision -o wide
+   ```
+
+### Dependencies Not Healthy
+
+For ambient mode deployments:
+
+1. Check IstioCNI status:
+   ```bash
+   kubectl get istiocni default -o yaml
+   ```
+
+2. Check ZTunnel status:
+   ```bash
+   kubectl get ztunnel default -o yaml
+   ```
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="IstioRevision" icon="code-branch" href="/concepts/istiorevision-resource">
+    Learn about the underlying revision resource
+  </Card>
+  <Card title="Update Strategies" icon="rotate" href="/configuration/update-strategies">
+    Deep dive into InPlace vs RevisionBased updates
+  </Card>
+  <Card title="Helm Values" icon="gear" href="/configuration/helm-values">
+    Configure Istio using Helm values
+  </Card>
+  <Card title="API Reference" icon="book" href="/api/istio">
+    Complete API documentation
+  </Card>
+</CardGroup>

@@ -1,0 +1,275 @@
+---
+title: IstioRevision
+description: API reference for the IstioRevision custom resource
+---
+
+## Overview
+
+The `IstioRevision` resource represents a single revision of an Istio Service Mesh deployment. It corresponds to a specific installation of the Istio control plane with a unique revision name.
+
+**Important:** Users shouldn't create IstioRevision objects directly. Instead, they should create an `Istio` object and allow the Sail Operator to create the underlying IstioRevision object(s) automatically.
+
+Each IstioRevision manages the actual Kubernetes resources (Deployments, Services, ConfigMaps, etc.) for a specific Istio control plane instance.
+
+**API Group:** `sailoperator.io/v1`
+
+**Kind:** `IstioRevision`
+
+**Scope:** Cluster
+
+**Short Name:** `istiorev`
+
+## Spec Fields
+
+The `spec` field defines the desired state of the IstioRevision.
+
+<ParamField path="version" type="string" required>
+  The version of Istio to install for this revision.
+  
+  **Validation:** Must be one of the supported versions (e.g., v1.29.1, v1.29.0, v1.28.5, v1.28.4, v1.27.8, etc.)
+  
+  **Example:** `v1.29.1`
+</ParamField>
+
+<ParamField path="namespace" type="string" required>
+  The namespace to which the Istio components should be installed.
+  
+  **Validation:** This field is immutable after creation
+  
+  **Example:** `istio-system`
+</ParamField>
+
+<ParamField path="values" type="object">
+  Defines the values to be passed to the Helm charts when installing this Istio revision. This allows you to customize the Istio installation with any valid Helm values.
+  
+  See the [Istio Helm Chart documentation](https://istio.io/latest/docs/setup/install/helm/) for available configuration options.
+  
+  **Note:** The `values.revision` field must match the resource name, or be empty when the name is 'default'.
+</ParamField>
+
+## Status Fields
+
+The `status` field reports the observed state of the IstioRevision resource.
+
+<ResponseField name="observedGeneration" type="integer">
+  The most recent generation observed for this IstioRevision object. It corresponds to the object's generation, which is updated on mutation by the API Server.
+</ResponseField>
+
+<ResponseField name="conditions" type="array">
+  Represents the latest available observations of the object's current state.
+  
+  <Expandable title="condition fields">
+    <ResponseField name="type" type="string">
+      The type of this condition. Possible values:
+      - `Reconciled`: Signifies whether the controller has successfully reconciled the resources
+      - `Ready`: Signifies whether the control plane installation is ready to handle requests
+      - `InUse`: Signifies whether any workload is configured to use this revision
+      - `DependenciesHealthy`: Signifies whether the dependencies required by this revision are healthy
+    </ResponseField>
+    
+    <ResponseField name="status" type="string">
+      The status of this condition. Can be `True`, `False`, or `Unknown`.
+    </ResponseField>
+    
+    <ResponseField name="reason" type="string">
+      A unique, single-word, CamelCase reason for the condition's last transition.
+      
+      Possible reasons:
+      - `Healthy`: The control plane is fully reconciled and all components are ready
+      - `ReconcileError`: The reconciliation has failed, but will be retried
+      - `IstiodNotReady`: The control plane is reconciled, but istiod is not ready
+      - `RemoteIstiodNotReady`: The remote istiod is not ready
+      - `ReadinessCheckFailed`: Readiness status could not be ascertained
+      - `ReferencedByWorkloads`: The revision is referenced by at least one pod or namespace
+      - `NotReferencedByAnything`: The revision is not referenced by any pod or namespace
+      - `UsageCheckFailed`: The operator could not check whether any workloads use the revision
+      - `IstioCNINotFound`: The IstioCNI resource is not found
+      - `IstioCNINotHealthy`: The IstioCNI resource is not healthy
+      - `ZTunnelNotFound`: The ZTunnel resource is not found
+      - `ZTunnelNotHealthy`: The ZTunnel resource is not healthy
+    </ResponseField>
+    
+    <ResponseField name="message" type="string">
+      Human-readable message indicating details about the last transition.
+    </ResponseField>
+    
+    <ResponseField name="lastTransitionTime" type="string">
+      Last time the condition transitioned from one status to another.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="state" type="string">
+  Reports the current state of the object. This is a summary of the most relevant condition reason.
+</ResponseField>
+
+## Examples
+
+### Viewing IstioRevisions
+
+List all IstioRevision resources created by the operator:
+
+```bash
+kubectl get istiorevisions
+```
+
+Example output:
+```
+NAME              NAMESPACE      PROFILE   READY   STATUS    IN USE   VERSION    AGE
+default-v1-29-1   istio-system   default   True    Healthy   True     v1.29.1    5m
+```
+
+### Inspecting a Specific Revision
+
+Get detailed information about a specific revision:
+
+```bash
+kubectl get istiorevision default-v1-29-1 -o yaml
+```
+
+### Checking Revision Status
+
+View the status of a revision:
+
+```bash
+kubectl get istiorevision default-v1-29-1 -o jsonpath='{.status}' | jq
+```
+
+The status will show:
+- Whether the revision is ready
+- Whether it's in use by workloads
+- The health of dependencies (CNI, ZTunnel)
+- Any error conditions
+
+## Common Usage Patterns
+
+### Understanding Revision Names
+
+When you create an `Istio` resource with RevisionBased update strategy, the operator creates IstioRevision resources with names based on the version:
+
+- **Istio version:** `v1.29.1`
+- **Generated revision name:** `default-v1-29-1`
+
+For the default revision (when using InPlace strategy), the name is simply `default`.
+
+### Checking If a Revision Is In Use
+
+To see if workloads are using a specific revision:
+
+```bash
+kubectl get istiorevision default-v1-29-1 -o jsonpath='{.status.conditions[?(@.type=="InUse")].status}'
+```
+
+This returns `True` if any namespaces or pods reference this revision.
+
+### Viewing Workloads Using a Revision
+
+Find namespaces using a specific revision:
+
+```bash
+kubectl get namespaces -l istio.io/rev=default-v1-29-1
+```
+
+Find pods using a specific revision:
+
+```bash
+kubectl get pods -A -l istio.io/rev=default-v1-29-1
+```
+
+### Monitoring Revision Dependencies
+
+For revisions that require CNI or ZTunnel, check the DependenciesHealthy condition:
+
+```bash
+kubectl get istiorevision default-v1-29-1 -o jsonpath='{.status.conditions[?(@.type=="DependenciesHealthy")]}' | jq
+```
+
+### Troubleshooting Revision Issues
+
+If a revision is not ready, check the conditions:
+
+```bash
+kubectl get istiorevision default-v1-29-1 -o jsonpath='{.status.conditions}' | jq
+```
+
+Common issues:
+- **IstiodNotReady:** The istiod deployment is not ready (check istiod pods)
+- **IstioCNINotFound:** The IstioCNI resource is missing (required for OpenShift/Ambient)
+- **ZTunnelNotFound:** The ZTunnel resource is missing (required for Ambient mode)
+
+## Validation Rules
+
+### Revision Name Validation
+
+- If the resource name is `default`, the `spec.values.revision` field must be empty or not set
+- Otherwise, `spec.values.revision` must match the resource name
+
+Example:
+```yaml
+# Valid: name is "default", no revision field
+apiVersion: sailoperator.io/v1
+kind: IstioRevision
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+
+# Valid: name matches revision
+apiVersion: sailoperator.io/v1
+kind: IstioRevision
+metadata:
+  name: canary
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  values:
+    revision: canary
+```
+
+### Namespace Validation
+
+- The `spec.values.global.istioNamespace` (if set) must match `spec.namespace`
+- The `spec.namespace` field is immutable
+
+## Lifecycle Management
+
+### Creation
+
+IstioRevision objects are typically created automatically by the Istio controller when:
+- A new Istio resource is created
+- An existing Istio resource is updated (in RevisionBased mode)
+
+### Updates
+
+The IstioRevision controller reconciles changes to:
+- The version field
+- The values configuration
+- Dependencies (IstioCNI, ZTunnel status)
+
+### Deletion
+
+IstioRevision objects are automatically deleted by the Istio controller when:
+- The parent Istio resource is deleted
+- A revision is no longer needed (after the grace period expires)
+- Using InPlace strategy and the version changes
+
+The operator respects the `inactiveRevisionDeletionGracePeriodSeconds` setting before deleting unused revisions.
+
+## Related Resources
+
+<Card title="Istio" icon="network-wired" href="/api/istio">
+  The parent resource that manages IstioRevision objects
+</Card>
+
+<Card title="IstioRevisionTag" icon="tag" href="/api/istiorevisiontag">
+  Create stable revision tags that point to specific IstioRevision objects
+</Card>
+
+<Card title="IstioCNI" icon="puzzle-piece" href="/api/istiocni">
+  Required dependency for OpenShift and Ambient mode
+</Card>
+
+<Card title="ZTunnel" icon="layer-group" href="/api/ztunnel">
+  Required dependency for Ambient mode
+</Card>

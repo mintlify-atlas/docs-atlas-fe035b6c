@@ -1,0 +1,638 @@
+---
+title: Waypoint Proxies
+description: Deploy Layer 7 processing proxies for advanced traffic management in ambient mode
+---
+
+Waypoint proxies are optional Envoy-based components in ambient mode that handle Layer 7 (L7) processing. They act as gateways to resources like namespaces, services, or workloads, providing advanced traffic management and security features.
+
+## Overview
+
+In ambient mesh architecture, waypoint proxies complement ztunnel by adding Layer 7 capabilities:
+
+- **Ztunnel** handles Layer 4: mTLS, L4 authorization, basic telemetry
+- **Waypoint** handles Layer 7: HTTP routing, L7 authorization, advanced observability
+
+<Info>
+Waypoint proxies are deployed using Kubernetes Gateway API resources and scale independently from applications.
+</Info>
+
+## When You Need Waypoints
+
+Deploy waypoint proxies when you require:
+
+### Traffic Management Features
+
+- HTTP routing and header-based matching
+- Load balancing algorithms (least request, consistent hashing)
+- Circuit breaking and outlier detection
+- Rate limiting
+- Fault injection for testing
+- Request/response retries and timeouts
+
+### Security Features
+
+- Layer 7 authorization policies based on:
+  - HTTP methods (GET, POST, etc.)
+  - Request paths and headers
+  - JWT claims
+- Request authentication
+
+### Observability Features
+
+- HTTP-level metrics
+- Access logging with L7 details
+- Distributed tracing
+
+<Note>
+If you only need mTLS encryption, L4 authorization, and basic TCP telemetry, you can skip waypoints and use ztunnel alone.
+</Note>
+
+## Traffic Flow Decision
+
+### Without Waypoints
+
+Traffic flows directly through ztunnel:
+
+```
+Client Pod → ZTunnel (L4 processing) → ZTunnel → Server Pod
+```
+
+- Only L4 policies enforced
+- Minimal processing overhead
+- Basic TCP metrics collected
+
+### With Waypoints
+
+Traffic is routed through waypoint for L7 processing:
+
+```
+Client Pod → ZTunnel → Waypoint (L7 processing) → ZTunnel → Server Pod
+```
+
+- Full L7 policies enforced
+- Advanced traffic management
+- Rich HTTP metrics and traces
+
+<Warning>
+Waypoint activation is explicit. Simply deploying a waypoint Gateway resource does NOT route traffic through it. You must label namespaces, services, or pods.
+</Warning>
+
+## Prerequisites
+
+Before deploying waypoints:
+
+1. **Ambient mode installed** - Complete the [ambient mode installation](/deployment/ambient-mode)
+2. **Gateway API CRDs** - Required for waypoint configuration
+
+### Installing Gateway API CRDs
+
+As of Kubernetes 1.30 and OpenShift 4.17, Gateway API CRDs are not included by default:
+
+```bash
+kubectl get crd gateways.gateway.networking.k8s.io &> /dev/null || \
+  kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
+```
+
+<Note>
+OpenShift 4.19+ includes Gateway API CRDs by default.
+</Note>
+
+## Deploying a Waypoint Proxy
+
+### Namespace-Level Waypoint
+
+Deploy a waypoint that processes traffic for all services in a namespace:
+
+```yaml waypoint-namespace.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  labels:
+    istio.io/waypoint-for: service
+  name: waypoint
+  namespace: bookinfo
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+  - name: mesh
+    port: 15008
+    protocol: HBONE
+```
+
+Apply the configuration:
+
+```bash
+kubectl apply -f waypoint-namespace.yaml
+```
+
+Verify the waypoint deployment:
+
+```bash
+kubectl get gateway waypoint -n bookinfo
+kubectl get pods -n bookinfo -l gateway.networking.k8s.io/gateway-name=waypoint
+```
+
+Expected output:
+
+```
+NAME                       READY   STATUS    RESTARTS   AGE
+waypoint-5d9c8b7f9-abc12   1/1     Running   0          30s
+```
+
+### Activate the Waypoint
+
+Label the namespace to route traffic through the waypoint:
+
+```bash
+kubectl label namespace bookinfo istio.io/use-waypoint=waypoint
+```
+
+Verify activation:
+
+```bash
+kubectl get namespace bookinfo --show-labels | grep use-waypoint
+```
+
+<Info>
+After labeling, any requests from ambient data plane pods to services in the `bookinfo` namespace will route through the waypoint for L7 processing.
+</Info>
+
+## Waypoint Traffic Types
+
+The `istio.io/waypoint-for` label determines what traffic the waypoint processes:
+
+### Service Traffic (Default)
+
+```yaml
+metadata:
+  labels:
+    istio.io/waypoint-for: service
+```
+
+Processes traffic destined for Kubernetes Services.
+
+### Workload Traffic
+
+```yaml
+metadata:
+  labels:
+    istio.io/waypoint-for: workload
+```
+
+Processes traffic destined directly for pods (useful for pod-level policies).
+
+### All Traffic
+
+```yaml
+metadata:
+  labels:
+    istio.io/waypoint-for: all
+```
+
+Processes both service and workload traffic.
+
+## Granular Waypoint Assignment
+
+### Service-Level Waypoint
+
+Deploy a waypoint for a specific service:
+
+```yaml waypoint-reviews.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  labels:
+    istio.io/waypoint-for: service
+  name: reviews-waypoint
+  namespace: bookinfo
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+  - name: mesh
+    port: 15008
+    protocol: HBONE
+```
+
+Label the service:
+
+```bash
+kubectl label service reviews -n bookinfo istio.io/use-waypoint=reviews-waypoint
+```
+
+### Pod-Level Waypoint
+
+For workload-specific policies:
+
+```yaml waypoint-workload.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  labels:
+    istio.io/waypoint-for: workload
+  name: productpage-waypoint
+  namespace: bookinfo
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+  - name: mesh
+    port: 15008
+    protocol: HBONE
+```
+
+Label the pod:
+
+```bash
+kubectl label pod <pod-name> -n bookinfo istio.io/use-waypoint=productpage-waypoint
+```
+
+## Cross-Namespace Waypoints
+
+A waypoint can serve traffic from multiple namespaces:
+
+```yaml cross-namespace-waypoint.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: waypoint-foo
+  namespace: foo
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+  - name: mesh
+    port: 15008
+    protocol: HBONE
+    allowedRoutes:
+      namespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            kubernetes.io/metadata.name: bookinfo
+```
+
+Configure the client namespace:
+
+```bash
+kubectl label namespace bookinfo istio.io/use-waypoint-namespace=foo
+kubectl label namespace bookinfo istio.io/use-waypoint=waypoint-foo
+```
+
+<Note>
+The control plane looks for waypoints in the same namespace by default. Use both `istio.io/use-waypoint-namespace` and `istio.io/use-waypoint` labels together for cross-namespace usage.
+</Note>
+
+## Layer 7 Features
+
+Once waypoints are active, configure Layer 7 features:
+
+### Traffic Routing with HTTPRoute
+
+Split traffic between service versions:
+
+```yaml reviews-route.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: reviews
+  namespace: bookinfo
+spec:
+  parentRefs:
+  - group: ""
+    kind: Service
+    name: reviews
+    port: 9080
+  rules:
+  - backendRefs:
+    - name: reviews-v1
+      port: 9080
+      weight: 90
+    - name: reviews-v2
+      port: 9080
+      weight: 10
+```
+
+<Info>
+HTTPRoute attaches to the Service resource and routes traffic to version-specific backend services.
+</Info>
+
+### Header-Based Routing
+
+```yaml reviews-header-route.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: reviews
+  namespace: bookinfo
+spec:
+  parentRefs:
+  - group: ""
+    kind: Service
+    name: reviews
+    port: 9080
+  rules:
+  - matches:
+    - headers:
+      - name: end-user
+        value: jason
+    backendRefs:
+    - name: reviews-v2
+      port: 9080
+  - backendRefs:
+    - name: reviews-v1
+      port: 9080
+```
+
+### Layer 7 Authorization Policies
+
+Enforce HTTP-level authorization:
+
+```yaml productpage-l7-authz.yaml
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: productpage-waypoint
+  namespace: bookinfo
+spec:
+  targetRefs:
+  - kind: Service
+    group: ""
+    name: productpage
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/bookinfo/sa/bookinfo-gateway
+    to:
+    - operation:
+        methods: ["GET", "POST"]
+        paths: ["/productpage*"]
+```
+
+<Warning>
+Use `targetRefs` to attach policies to waypoints. The traditional `selector` field targets ztunnel enforcement.
+</Warning>
+
+### Request Authentication
+
+Validate JWT tokens at the waypoint:
+
+```yaml jwt-auth.yaml
+apiVersion: security.istio.io/v1
+kind: RequestAuthentication
+metadata:
+  name: jwt-auth
+  namespace: bookinfo
+spec:
+  targetRefs:
+  - kind: Service
+    group: ""
+    name: productpage
+  jwtRules:
+  - issuer: "https://auth.example.com"
+    jwksUri: "https://auth.example.com/.well-known/jwks.json"
+```
+
+## Waypoint Updates
+
+### Automatic Updates with InPlace Strategy
+
+Waypoint proxies automatically update when the control plane is updated:
+
+```bash
+# Update control plane
+kubectl patch istio default -n istio-system --type merge -p '{"spec":{"version":"v1.29.1"}}'
+
+# Verify waypoint updated
+kubectl get pods -n bookinfo -l gateway.networking.k8s.io/gateway-name=waypoint
+istioctl proxy-status | grep waypoint
+```
+
+Expected output:
+
+```
+waypoint-5d9c8b7f9-abc12.bookinfo     SYNCED     SYNCED     SYNCED     SYNCED     istiod-6cf8d4f9cb-wm7x6.istio-system     1.29.1
+```
+
+### Verifying L7 Features After Update
+
+Test traffic routing:
+
+```bash
+for i in {1..10}; do 
+  kubectl exec "$(kubectl get pod -l app=productpage -n bookinfo -o jsonpath='{.items[0].metadata.name}')" \
+    -n bookinfo -- curl -s http://reviews:9080/reviews/0 | grep -o "reviews-v[0-9]"
+done
+```
+
+Expected output matching HTTPRoute configuration:
+
+```
+reviews-v1
+reviews-v1
+reviews-v1
+reviews-v1
+reviews-v2
+reviews-v1
+...
+```
+
+Test authorization policies:
+
+```bash
+# Should be denied (not in allow list)
+kubectl exec "$(kubectl get pod -l app=ratings -n bookinfo -o jsonpath='{.items[0].metadata.name}')" \
+  -n bookinfo -- curl -sS productpage:9080/productpage
+
+# Expected: RBAC: access denied
+```
+
+## Waypoint Scaling
+
+Waypoints scale independently from applications:
+
+### Manual Scaling
+
+```bash
+kubectl scale deployment waypoint -n bookinfo --replicas=3
+```
+
+### Horizontal Pod Autoscaling
+
+```yaml waypoint-hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: waypoint-hpa
+  namespace: bookinfo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: waypoint
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+```
+
+## Troubleshooting
+
+### Waypoint Not Processing Traffic
+
+Check waypoint label:
+
+```bash
+kubectl get namespace bookinfo -o jsonpath='{.metadata.labels.istio\.io/use-waypoint}'
+```
+
+Verify waypoint pod is running:
+
+```bash
+kubectl get pods -n bookinfo -l gateway.networking.k8s.io/gateway-name=waypoint
+```
+
+Check waypoint logs:
+
+```bash
+WAYPOINT_POD=$(kubectl get pods -n bookinfo -l gateway.networking.k8s.io/gateway-name=waypoint -o jsonpath='{.items[0].metadata.name}')
+kubectl logs $WAYPOINT_POD -n bookinfo | tail -50
+```
+
+### L7 Policies Not Enforced
+
+Verify policy targetRefs:
+
+```bash
+kubectl get authorizationpolicy -n bookinfo -o yaml | grep -A 10 targetRefs
+```
+
+Check Gateway configuration:
+
+```bash
+kubectl get gateway waypoint -n bookinfo -o yaml
+```
+
+Ensure `gatewayClassName` is `istio-waypoint`:
+
+```yaml
+spec:
+  gatewayClassName: istio-waypoint
+```
+
+### High Latency Through Waypoint
+
+Check waypoint resource usage:
+
+```bash
+kubectl top pods -n bookinfo -l gateway.networking.k8s.io/gateway-name=waypoint
+```
+
+View waypoint listener configuration:
+
+```bash
+WAYPOINT_POD=$(kubectl get pod -n bookinfo -l gateway.networking.k8s.io/gateway-name=waypoint -o jsonpath='{.items[0].metadata.name}')
+istioctl proxy-config listeners $WAYPOINT_POD -n bookinfo
+```
+
+Expected output:
+
+```
+ADDRESSES PORT  MATCH DESTINATION
+          0     ALL   Cluster: inbound-vip|9080|http|reviews.bookinfo.svc.cluster.local
+          0     ALL   Cluster: inbound-vip|9080|http|reviews-v1.bookinfo.svc.cluster.local
+          0     ALL   Cluster: inbound-vip|9080|http|reviews-v2.bookinfo.svc.cluster.local
+0.0.0.0   15008 ALL   Inline Route:
+0.0.0.0   15021 ALL   Inline Route: /healthz/ready*
+```
+
+### Cross-Namespace Waypoint Not Working
+
+Verify both labels are set:
+
+```bash
+kubectl get namespace bookinfo --show-labels | grep waypoint
+```
+
+Expected:
+
+```
+istio.io/use-waypoint-namespace=foo,istio.io/use-waypoint=waypoint-foo
+```
+
+Check allowedRoutes in waypoint Gateway:
+
+```bash
+kubectl get gateway waypoint-foo -n foo -o yaml | grep -A 10 allowedRoutes
+```
+
+## Resource Requirements
+
+Typical waypoint resource consumption:
+
+- **CPU**: 50-100m (idle), can scale to 2+ cores under load
+- **Memory**: 128-256 MB per waypoint
+- **Network**: Minimal latency (~1-2ms)
+
+<Info>
+Waypoints use similar resources to sidecar proxies but are shared across multiple workloads, providing better efficiency.
+</Info>
+
+## Cleanup
+
+### Remove Waypoint from Namespace
+
+```bash
+kubectl label namespace bookinfo istio.io/use-waypoint-
+```
+
+### Delete Waypoint Gateway
+
+```bash
+kubectl delete gateway waypoint -n bookinfo
+```
+
+### Remove Associated Policies
+
+```bash
+kubectl delete httproute reviews -n bookinfo
+kubectl delete authorizationpolicy productpage-waypoint -n bookinfo
+```
+
+## Comparison with Sidecars
+
+| Feature | Sidecar Mode | Waypoint Mode |
+|---------|--------------|---------------|
+| **Deployment** | Per-pod container | Shared proxy deployment |
+| **Scaling** | Tied to application | Independent scaling |
+| **Resource overhead** | Per pod (~128MB each) | Shared (~128MB per waypoint) |
+| **L7 features** | Always available | Only when waypoint deployed |
+| **Update** | Requires pod restart | Independent updates |
+| **Granularity** | Pod-level | Namespace/service/pod-level |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Ambient Mode" icon="cloud" href="/deployment/ambient-mode">
+    Return to ambient mode overview
+  </Card>
+  <Card title="Traffic Management" icon="route" href="https://istio.io/latest/docs/tasks/traffic-management/">
+    Advanced HTTPRoute configurations
+  </Card>
+  <Card title="Security Policies" icon="shield-halved" href="https://istio.io/latest/docs/tasks/security/">
+    Layer 7 authorization patterns
+  </Card>
+  <Card title="Observability" icon="chart-line" href="/integrations/observability">
+    Metrics and tracing with waypoints
+  </Card>
+</CardGroup>
+
+## Additional Resources
+
+- [Istio Waypoint Documentation](https://istio.io/latest/docs/ambient/usage/waypoint/)
+- [Kubernetes Gateway API](https://gateway-api.sigs.k8s.io/)
+- [Waypoint Troubleshooting](https://istio.io/latest/docs/ambient/usage/troubleshoot-waypoint/)

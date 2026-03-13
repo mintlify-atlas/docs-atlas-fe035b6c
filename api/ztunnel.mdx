@@ -1,0 +1,465 @@
+---
+title: ZTunnel
+description: API reference for the ZTunnel custom resource
+---
+
+## Overview
+
+The `ZTunnel` resource represents a deployment of the Istio ztunnel component, which is a core component of Istio's Ambient mesh mode. ZTunnel (Zero Trust Tunnel) is a purpose-built per-node proxy that handles L4 traffic in the ambient data plane.
+
+ZTunnel is deployed as a DaemonSet, running one instance per node in the cluster. It provides:
+- **mTLS encryption** for pod-to-pod communication
+- **L4 authorization policies** enforcement
+- **Zero trust networking** without requiring sidecar proxies
+
+**Important:** ZTunnel is only required for Istio Ambient mesh deployments. It is not used in sidecar mode.
+
+**Important:** Only one ZTunnel resource can exist in the cluster, and it must be named `default`.
+
+**API Group:** `sailoperator.io/v1`
+
+**Kind:** `ZTunnel`
+
+**Scope:** Cluster
+
+## Spec Fields
+
+The `spec` field defines the desired state of the ZTunnel installation.
+
+<ParamField path="version" type="string" required>
+  The version of Istio ztunnel to install. Should match the Istio control plane version.
+  
+  **Default:** `v1.29.1`
+  
+  **Validation:** Must be one of the supported versions (e.g., v1.29.1, v1.29.0, v1.28.5, v1.28.4, v1.27.8, etc.)
+  
+  **Example:** `v1.29.1`
+</ParamField>
+
+<ParamField path="namespace" type="string" required>
+  The namespace to which the Istio ztunnel component should be installed.
+  
+  **Default:** `ztunnel`
+  
+  **Example:** `ztunnel`
+</ParamField>
+
+<ParamField path="values" type="object">
+  Defines the values to be passed to the Helm charts when installing Istio ztunnel. This allows you to customize the ZTunnel installation.
+  
+  <Expandable title="Common values fields">
+    <ParamField path="values.ztunnel" type="object">
+      Configuration for the Istio ztunnel component.
+      
+      See the [Istio Ambient documentation](https://istio.io/latest/docs/ambient/) for available options.
+    </ParamField>
+    
+    <ParamField path="values.global" type="object">
+      Global configuration applicable to the Istio ztunnel component.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Status Fields
+
+The `status` field reports the observed state of the ZTunnel resource.
+
+<ResponseField name="observedGeneration" type="integer">
+  The most recent generation observed for this ZTunnel object. It corresponds to the object's generation, which is updated on mutation by the API Server.
+</ResponseField>
+
+<ResponseField name="conditions" type="array">
+  Represents the latest available observations of the object's current state.
+  
+  <Expandable title="condition fields">
+    <ResponseField name="type" type="string">
+      The type of this condition. Possible values:
+      - `Reconciled`: Signifies whether the controller has successfully reconciled the resources
+      - `Ready`: Signifies whether the ztunnel DaemonSet is ready
+    </ResponseField>
+    
+    <ResponseField name="status" type="string">
+      The status of this condition. Can be `True`, `False`, or `Unknown`.
+    </ResponseField>
+    
+    <ResponseField name="reason" type="string">
+      A unique, single-word, CamelCase reason for the condition's last transition.
+      
+      Possible reasons:
+      - `Healthy`: The ztunnel is fully reconciled and all components are ready
+      - `ReconcileError`: The reconciliation has failed, but will be retried
+      - `DaemonSetNotReady`: The ztunnel DaemonSet is not ready
+      - `ReadinessCheckFailed`: The DaemonSet readiness status could not be ascertained
+    </ResponseField>
+    
+    <ResponseField name="message" type="string">
+      Human-readable message indicating details about the last transition.
+    </ResponseField>
+    
+    <ResponseField name="lastTransitionTime" type="string">
+      Last time the condition transitioned from one status to another.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="state" type="string">
+  Reports the current state of the object. This is a summary of the most relevant condition reason.
+</ResponseField>
+
+## Examples
+
+### Basic Installation
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+```
+
+### Complete Ambient Mesh Setup
+
+Deploy all required components for Ambient mesh:
+
+```yaml
+# Step 1: Deploy IstioCNI
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+---
+# Step 2: Deploy ZTunnel
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+---
+# Step 3: Deploy Istio with Ambient profile
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  updateStrategy:
+    type: InPlace
+  values:
+    pilot:
+      trustedZtunnelNamespace: "ztunnel"
+```
+
+## Common Usage Patterns
+
+### Deploying ZTunnel for Ambient Mesh
+
+Deploy the required components in order:
+
+```bash
+# 1. Deploy IstioCNI
+kubectl apply -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+EOF
+
+# 2. Wait for CNI to be ready
+kubectl wait --for=condition=Ready istiocni/default --timeout=300s
+
+# 3. Deploy ZTunnel
+kubectl apply -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+EOF
+
+# 4. Wait for ZTunnel to be ready
+kubectl wait --for=condition=Ready ztunnel/default --timeout=300s
+
+# 5. Deploy Istio
+kubectl apply -f istio-ambient.yaml
+```
+
+### Checking ZTunnel Status
+
+View the status of the ZTunnel installation:
+
+```bash
+kubectl get ztunnel default
+```
+
+Example output:
+```
+NAME      NAMESPACE   READY   STATUS    VERSION   AGE
+default   ztunnel     True    Healthy   v1.29.1   5m
+```
+
+Get detailed status:
+
+```bash
+kubectl get ztunnel default -o jsonpath='{.status}' | jq
+```
+
+### Verifying ZTunnel DaemonSet
+
+The ZTunnel resource creates a DaemonSet. Verify it's running:
+
+```bash
+kubectl get daemonset -n ztunnel ztunnel
+```
+
+Check that ztunnel pods are running on all nodes:
+
+```bash
+kubectl get pods -n ztunnel -o wide
+```
+
+Each node should have one ztunnel pod running.
+
+### Upgrading ZTunnel
+
+When upgrading Istio Ambient mesh, upgrade components in order:
+
+```bash
+# 1. Upgrade IstioCNI
+kubectl patch istiocni default --type merge -p '{"spec":{"version":"v1.29.1"}}'
+kubectl wait --for=condition=Ready istiocni/default --timeout=300s
+
+# 2. Upgrade ZTunnel
+kubectl patch ztunnel default --type merge -p '{"spec":{"version":"v1.29.1"}}'
+kubectl wait --for=condition=Ready ztunnel/default --timeout=300s
+
+# 3. Upgrade Istio
+kubectl patch istio default --type merge -p '{"spec":{"version":"v1.29.1"}}'
+```
+
+### Viewing ZTunnel Logs
+
+View logs from the ztunnel pods:
+
+```bash
+kubectl logs -n ztunnel -l app=ztunnel
+```
+
+View logs from a specific node:
+
+```bash
+kubectl logs -n ztunnel -l app=ztunnel --field-selector spec.nodeName=<node-name>
+```
+
+Follow logs in real-time:
+
+```bash
+kubectl logs -n ztunnel -l app=ztunnel -f
+```
+
+### Adding Namespaces to Ambient Mesh
+
+Once ZTunnel is deployed, add namespaces to the ambient mesh:
+
+```bash
+kubectl label namespace my-app istio.io/dataplane-mode=ambient
+```
+
+Verify the label:
+
+```bash
+kubectl get namespace my-app -o jsonpath='{.metadata.labels.istio\.io/dataplane-mode}'
+```
+
+Pods in this namespace will now use ztunnel for L4 connectivity.
+
+## Troubleshooting
+
+### ZTunnel Not Ready
+
+If the ZTunnel resource is not becoming ready:
+
+1. Check the ZTunnel DaemonSet status:
+```bash
+kubectl get daemonset -n ztunnel ztunnel
+```
+
+2. Check ztunnel pod logs:
+```bash
+kubectl logs -n ztunnel -l app=ztunnel
+```
+
+3. Check for events:
+```bash
+kubectl describe ztunnel default
+```
+
+### ZTunnel Pods Not Starting
+
+Common issues:
+
+- **IstioCNI not ready:** ZTunnel requires IstioCNI to be installed and healthy
+- **Permission errors:** Ensure the ztunnel namespace has correct RBAC permissions
+- **Node compatibility:** Verify ztunnel is compatible with your Kubernetes version
+- **Resource constraints:** Check if nodes have sufficient resources
+
+### Connectivity Issues in Ambient Mode
+
+If pods in ambient mode cannot communicate:
+
+1. Verify ZTunnel is running on all nodes:
+```bash
+kubectl get pods -n ztunnel -o wide
+```
+
+2. Check ztunnel logs for errors:
+```bash
+kubectl logs -n ztunnel -l app=ztunnel | grep -i error
+```
+
+3. Verify namespace is labeled correctly:
+```bash
+kubectl get namespace <namespace> -o jsonpath='{.metadata.labels.istio\.io/dataplane-mode}'
+```
+
+4. Check that IstioCNI is healthy:
+```bash
+kubectl get istiocni default -o jsonpath='{.status.state}'
+```
+
+### mTLS Not Working
+
+If mTLS is not being enforced:
+
+1. Verify Istio control plane is configured for ambient:
+```bash
+kubectl get istio default -o jsonpath='{.spec.profile}'
+```
+
+2. Check ztunnel configuration:
+```bash
+kubectl get configmap -n ztunnel ztunnel -o yaml
+```
+
+3. Verify certificates are being issued:
+```bash
+kubectl logs -n ztunnel -l app=ztunnel | grep -i cert
+```
+
+### Performance Issues
+
+If experiencing performance issues with ztunnel:
+
+1. Check ztunnel resource usage:
+```bash
+kubectl top pods -n ztunnel
+```
+
+2. Review ztunnel resource limits:
+```bash
+kubectl get daemonset -n ztunnel ztunnel -o yaml | grep -A 5 resources
+```
+
+3. Check for errors in logs:
+```bash
+kubectl logs -n ztunnel -l app=ztunnel --tail=100 | grep -i error
+```
+
+## Validation Rules
+
+### Name Validation
+
+The ZTunnel resource must be named `default`. This is enforced by a validation rule:
+
+```yaml
+# Valid
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default  # Must be "default"
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+```
+
+## Dependencies
+
+### Required By
+
+The following resources depend on ZTunnel:
+
+- **Istio** (when using Ambient profile)
+- **IstioRevision** (when using Ambient profile)
+
+The IstioRevision controller checks the `DependenciesHealthy` condition, which includes the health of the ZTunnel resource.
+
+### Requires
+
+- **IstioCNI:** ZTunnel requires IstioCNI to be installed and ready
+
+## Ambient Mesh Architecture
+
+ZTunnel is a key component in Istio's Ambient mesh architecture:
+
+```
+┌─────────────────────────────────────────────┐
+│             Istio Control Plane              │
+│              (istiod)                        │
+└─────────────────────────────────────────────┘
+                    ↓ configuration
+┌─────────────────────────────────────────────┐
+│              ZTunnel DaemonSet               │
+│   (per-node L4 proxy, mTLS, authz)          │
+└─────────────────────────────────────────────┘
+                    ↑ L4 traffic
+┌─────────────────────────────────────────────┐
+│           Application Pods                   │
+│      (no sidecar required)                   │
+└─────────────────────────────────────────────┘
+```
+
+### Benefits of ZTunnel
+
+- **No sidecar injection required:** Pods don't need to be restarted or modified
+- **Lower resource usage:** One proxy per node instead of one per pod
+- **Transparent mTLS:** Automatic encryption without application changes
+- **L4 policies:** Network-level authorization policies
+
+### When to Use Ambient vs Sidecar
+
+**Use Ambient (with ZTunnel) when:**
+- You want to minimize resource overhead
+- You need to add services to the mesh without modifying them
+- You primarily need L4 features (mTLS, basic policies)
+- You want easier operational management
+
+**Use Sidecar when:**
+- You need advanced L7 features (circuit breaking, retries, etc.)
+- You need per-pod traffic control
+- You're already running sidecar mode and it works well
+
+## Related Resources
+
+<Card title="IstioCNI" icon="network-wired" href="/api/istiocni">
+  Required dependency for ZTunnel - deploy IstioCNI first
+</Card>
+
+<Card title="Istio" icon="cube" href="/api/istio">
+  Deploy Istio control plane with Ambient profile
+</Card>

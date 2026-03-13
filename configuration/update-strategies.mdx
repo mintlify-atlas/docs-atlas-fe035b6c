@@ -1,0 +1,494 @@
+---
+title: Update Strategies
+description: Control how Istio control plane updates are applied
+---
+
+The Sail Operator supports two update strategies that control how the Istio control plane is updated when you change the version or configuration in the Istio resource.
+
+## Overview
+
+Update strategies determine:
+
+- How new control plane versions are deployed
+- Whether old versions are kept running
+- How workloads migrate between versions
+- When old versions are removed
+
+## Strategy Types
+
+### InPlace Strategy
+
+Updates the existing control plane in place.
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+```
+
+**How it works:**
+
+1. Operator updates the existing IstioRevision
+2. Kubernetes performs rolling update of istiod pods
+3. Workloads automatically reconnect to updated control plane
+4. No manual intervention required
+
+**Characteristics:**
+
+- **Single control plane** - Only one version runs at a time
+- **Automatic migration** - Workloads reconnect automatically
+- **Quick updates** - Faster than revision-based
+- **Brief disruption** - Short period during istiod rolling update
+
+**Use when:**
+
+- Updating to patch versions (1.29.0 → 1.29.1)
+- Making configuration changes
+- Acceptable to have brief control plane disruption
+- Want simplicity over canary upgrades
+
+<Info>
+InPlace is the default strategy and suitable for most use cases.
+</Info>
+
+### RevisionBased Strategy
+
+Creates a new control plane revision for each version.
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+    inactiveRevisionDeletionGracePeriodSeconds: 300
+    updateWorkloads: false
+```
+
+**How it works:**
+
+1. Operator creates new IstioRevision for the new version
+2. Both old and new control planes run simultaneously
+3. You control when workloads migrate to the new version
+4. Old revision is removed after grace period (if inactive)
+
+**Characteristics:**
+
+- **Multiple control planes** - Old and new versions coexist
+- **Manual migration** - You control workload movement
+- **Canary upgrades** - Test new version with subset of workloads
+- **Safe rollback** - Keep old version until confident
+
+**Use when:**
+
+- Upgrading between minor versions (1.28.x → 1.29.x)
+- Need canary deployment of control plane
+- Want zero-downtime upgrades
+- Require ability to roll back
+- Managing multiple mesh versions
+
+## RevisionBased Strategy Details
+
+### Manual Workload Migration
+
+With `updateWorkloads: false` (default), you migrate workloads manually:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+    updateWorkloads: false  # Manual migration
+    inactiveRevisionDeletionGracePeriodSeconds: 300
+```
+
+**Migration process:**
+
+1. Update Istio resource to new version
+2. New revision is created automatically
+3. Update namespace labels to use new revision:
+
+```bash
+# Update namespace to use new revision
+kubectl label namespace my-app istio.io/rev=default-v1-29-1 --overwrite
+
+# Restart pods to inject new sidecar version
+kubectl rollout restart deployment -n my-app
+```
+
+4. Monitor the migration:
+
+```bash
+# Check pod revisions
+kubectl get pods -n my-app -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.labels.istio\.io/rev}{"\n"}{end}'
+```
+
+5. After all workloads migrated, old revision is automatically removed after grace period
+
+### Automatic Workload Migration
+
+With `updateWorkloads: true`, the operator migrates workloads automatically:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+    updateWorkloads: true  # Automatic migration
+    inactiveRevisionDeletionGracePeriodSeconds: 300
+```
+
+**How it works:**
+
+1. New revision is created
+2. Operator updates namespace labels automatically
+3. Operator triggers rolling restart of workloads
+4. All workloads migrate to new version
+5. Old revision is removed after grace period
+
+<Warning>
+Automatic migration restarts all workloads. Ensure your applications handle restarts gracefully.
+</Warning>
+
+### Revision Naming
+
+Revisions are automatically named:
+
+```yaml
+# For Istio named "default" at version v1.29.1
+default-v1-29-1
+
+# For Istio named "stable" at version v1.28.5
+stable-v1-28-5
+```
+
+View revisions:
+
+```bash
+kubectl get istiorevisions
+```
+
+Output:
+```
+NAME              TYPE       READY   STATUS      IN USE   VERSION   AGE
+default-v1-28-5   Local      True    Healthy     0        v1.28.5   10d
+default-v1-29-1   Local      True    Healthy     5        v1.29.1   2d
+```
+
+### Grace Period
+
+The `inactiveRevisionDeletionGracePeriodSeconds` setting controls when inactive revisions are deleted:
+
+```yaml
+updateStrategy:
+  type: RevisionBased
+  inactiveRevisionDeletionGracePeriodSeconds: 300  # 5 minutes
+```
+
+- **Inactive** = No workloads using the revision (IN USE = 0)
+- **Grace period starts** when revision becomes inactive
+- **Deletion happens** after grace period expires
+- **Minimum value**: 0 (delete immediately)
+- **Default value**: 30 seconds
+
+<Info>
+Set a longer grace period if you need time to validate the new revision before the old one is removed.
+</Info>
+
+## Using Revision Tags
+
+Revision tags provide stable names for revisions:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioRevisionTag
+metadata:
+  name: prod
+spec:
+  targetRef:
+    kind: Istio
+    name: default
+```
+
+Then label namespaces with the tag:
+
+```bash
+kubectl label namespace my-app istio.io/rev=prod
+```
+
+When you update the Istio version, the tag automatically points to the new revision.
+
+See [IstioRevisionTag Resource](/concepts/istiorevisiontag-resource) for details.
+
+## Comparing Strategies
+
+| Aspect | InPlace | RevisionBased |
+|--------|---------|---------------|
+| **Control planes** | Single | Multiple |
+| **Downtime** | Brief during update | Zero |
+| **Complexity** | Simple | More complex |
+| **Canary testing** | No | Yes |
+| **Rollback** | Must downgrade | Switch back to old revision |
+| **Resource usage** | Lower | Higher during migration |
+| **Migration effort** | None | Manual or automatic |
+| **Best for** | Patch updates | Minor version upgrades |
+
+## Common Patterns
+
+### Pattern 1: Simple Updates (InPlace)
+
+For most configuration changes and patch updates:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+  values:
+    pilot:
+      traceSampling: 10.0  # Update applied in-place
+```
+
+### Pattern 2: Canary Version Upgrade (RevisionBased)
+
+For testing new versions with subset of traffic:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1  # Upgrade from v1.28.5
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+    updateWorkloads: false
+    inactiveRevisionDeletionGracePeriodSeconds: 3600  # 1 hour
+```
+
+Migration steps:
+
+```bash
+# 1. Canary namespace
+kubectl label namespace canary istio.io/rev=default-v1-29-1
+kubectl rollout restart deployment -n canary
+
+# 2. Validate canary
+# ... run tests ...
+
+# 3. Migrate more namespaces
+kubectl label namespace prod istio.io/rev=default-v1-29-1
+kubectl rollout restart deployment -n prod
+
+# 4. Old revision auto-deletes after grace period
+```
+
+### Pattern 3: Fast Automatic Migration (RevisionBased)
+
+For rapid updates with automatic workload migration:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+    updateWorkloads: true
+    inactiveRevisionDeletionGracePeriodSeconds: 60
+```
+
+### Pattern 4: Multiple Versions (RevisionBased)
+
+Run multiple mesh versions simultaneously:
+
+```yaml
+# Stable version
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: stable
+spec:
+  version: v1.28.5
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+---
+# Latest version
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: latest
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+```
+
+Different namespaces can use different versions:
+
+```bash
+kubectl label namespace legacy istio.io/rev=stable-v1-28-5
+kubectl label namespace modern istio.io/rev=latest-v1-29-1
+```
+
+## Switching Strategies
+
+You can switch strategies by updating the Istio resource:
+
+```yaml
+# Change from InPlace to RevisionBased
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased  # Changed from InPlace
+```
+
+<Note>
+Switching from InPlace to RevisionBased creates a new revision. Existing workloads continue using the original revision until migrated.
+</Note>
+
+## Monitoring Updates
+
+### Check Istio Status
+
+```bash
+kubectl get istio default -o yaml
+```
+
+Key status fields:
+
+```yaml
+status:
+  state: Healthy
+  activeRevisionName: default-v1-29-1
+  revisions:
+    total: 2
+    ready: 2
+    inUse: 1
+```
+
+### Check Revision Status
+
+```bash
+kubectl get istiorevisions
+```
+
+### Monitor Workload Migration
+
+```bash
+# Pods per revision
+kubectl get pods -A -l istio.io/rev --show-labels
+
+# Count by revision
+kubectl get pods -A -o json | \
+  jq -r '.items[].metadata.labels."istio.io/rev"' | \
+  sort | uniq -c
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="InPlace for Patches" icon="wrench">
+    Use InPlace for patch version updates (1.29.0 → 1.29.1).
+  </Card>
+  <Card title="RevisionBased for Upgrades" icon="arrow-up">
+    Use RevisionBased for minor version upgrades (1.28 → 1.29).
+  </Card>
+  <Card title="Test Before Migrating" icon="vial">
+    Always validate new revision with canary before full migration.
+  </Card>
+  <Card title="Monitor During Updates" icon="gauge">
+    Watch control plane and workload health during updates.
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### Revision Not Created
+
+```bash
+# Check Istio status
+kubectl describe istio default
+
+# Check operator logs
+kubectl logs -n istio-system -l app=istio-operator
+```
+
+### Workloads Not Migrating
+
+```bash
+# Check namespace label
+kubectl get namespace my-app -o jsonpath='{.metadata.labels.istio\.io/rev}'
+
+# Check pod revision
+kubectl get pods -n my-app -o jsonpath='{.items[0].metadata.labels.istio\.io/rev}'
+
+# Restart pods if label changed
+kubectl rollout restart deployment -n my-app
+```
+
+### Old Revision Not Deleted
+
+```bash
+# Check revision usage
+kubectl get istiorevision -o wide
+
+# Check if grace period expired
+kubectl get istiorevision old-revision -o yaml | grep inactiveTime
+
+# Manually delete if needed
+kubectl delete istiorevision old-revision
+```
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Version Management" icon="tags" href="/configuration/version-management">
+    Learn about supported Istio versions
+  </Card>
+  <Card title="Upgrades" icon="arrow-up-right-from-square" href="/operations/upgrades">
+    Step-by-step upgrade procedures
+  </Card>
+  <Card title="IstioRevision" icon="code-branch" href="/concepts/istiorevision-resource">
+    Understanding IstioRevision resources
+  </Card>
+  <Card title="Revision Tags" icon="tag" href="/concepts/istiorevisiontag-resource">
+    Using revision tags for stable references
+  </Card>
+</CardGroup>

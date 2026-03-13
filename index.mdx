@@ -1,97 +1,136 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Sail Operator"
+description: "Kubernetes operator for managing Istio service mesh control plane lifecycle"
 ---
 
-## Setting up
+<div style={{ 
+  background: 'linear-gradient(135deg, #446cb4 0%, #50699C 100%)', 
+  padding: '48px 32px',
+  borderRadius: '12px',
+  marginBottom: '32px'
+}}>
+  <h1 style={{ color: '#ffffff', fontSize: '40px', fontWeight: '700', marginBottom: '16px', marginTop: '0' }}>
+    Sail Operator
+  </h1>
+  <p style={{ color: '#d7dfed', fontSize: '18px', marginBottom: '32px', maxWidth: '800px' }}>
+    Manage your Istio service mesh control plane with declarative Kubernetes resources. Deploy, upgrade, and scale Istio using a powerful operator pattern.
+  </p>
+  <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+    <a 
+      href="/quickstart" 
+      style={{ 
+        background: '#7ec1f7',
+        color: '#1f3a6e',
+        padding: '12px 24px',
+        borderRadius: '24px',
+        textDecoration: 'none',
+        fontWeight: '600',
+        display: 'inline-block'
+      }}
+    >
+      Get Started
+    </a>
+    <a 
+      href="https://github.com/istio-ecosystem/sail-operator" 
+      style={{ 
+        background: 'transparent',
+        color: '#7ec1f7',
+        padding: '12px 24px',
+        borderRadius: '24px',
+        textDecoration: 'none',
+        fontWeight: '600',
+        border: '2px solid #7ec1f7',
+        display: 'inline-block'
+      }}
+    >
+      View on GitHub
+    </a>
+  </div>
+</div>
 
-Get your documentation site up and running in minutes.
+## Key Features
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Declarative Management" icon="file-code">
+    Manage Istio control planes using Kubernetes custom resources with full GitOps support
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Multiple Deployment Modes" icon="cubes">
+    Support for both sidecar and ambient mesh architectures to fit your service mesh needs
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Flexible Upgrades" icon="rotate">
+    InPlace and RevisionBased update strategies with automated workload migration
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Multi-Version Support" icon="layer-group">
+    Install and manage multiple Istio versions simultaneously with n-2 release compatibility
   </Card>
-</Columns>
+  <Card title="Multi-Cluster Ready" icon="network-wired">
+    Deploy service meshes across multiple clusters with primary-remote and multi-primary topologies
+  </Card>
+  <Card title="OpenShift Integration" icon="redhat">
+    Native support for OpenShift with integrated CNI plugin management
+  </Card>
+</CardGroup>
 
-## Create beautiful pages
+## Quick Start
 
-Everything you need to create world-class documentation.
+Get your Istio control plane running in minutes:
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+<Steps>
+  <Step title="Install the Operator">
+    Deploy the Sail Operator to your Kubernetes cluster
+    ```bash
+    kubectl apply -f https://github.com/istio-ecosystem/sail-operator/releases/latest/download/install.yaml
+    ```
+  </Step>
+  
+  <Step title="Create an Istio Resource">
+    Deploy your Istio control plane with a simple manifest
+    ```yaml
+    apiVersion: sailoperator.io/v1
+    kind: Istio
+    metadata:
+      name: default
+    spec:
+      namespace: istio-system
+      version: v1.29-latest
+    ```
+  </Step>
+  
+  <Step title="Verify Installation">
+    Check that your control plane is healthy
+    ```bash
+    kubectl get istio -A
+    ```
+  </Step>
+</Steps>
 
-## Need inspiration?
+## Explore the Documentation
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<CardGroup cols={2}>
+  <Card title="Core Concepts" icon="book" href="/concepts/overview">
+    Learn about Istio, IstioRevision, and other custom resources
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/configuration/helm-values">
+    Configure your control plane with Helm values and profiles
+  </Card>
+  <Card title="Deployment Modes" icon="server" href="/deployment/sidecar-mode">
+    Choose between sidecar and ambient mesh architectures
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/istio">
+    Explore the complete API specification
+  </Card>
+</CardGroup>
+
+## Community and Support
+
+<CardGroup cols={3}>
+  <Card title="GitHub" icon="github" href="https://github.com/istio-ecosystem/sail-operator">
+    View source code and contribute
+  </Card>
+  <Card title="Weekly Calls" icon="users" href="https://github.com/istio-ecosystem/sail-operator#contributor-call">
+    Join our Thursday community calls
+  </Card>
+  <Card title="Report Issues" icon="bug" href="https://github.com/istio-ecosystem/sail-operator/issues">
+    Submit bugs and feature requests
+  </Card>
+</CardGroup>

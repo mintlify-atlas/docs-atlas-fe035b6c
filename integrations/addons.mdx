@@ -1,0 +1,429 @@
+---
+title: Addons and Tools
+description: Deploy and configure complementary tools for your service mesh
+icon: puzzle-piece
+---
+
+Addons extend the functionality of your Istio service mesh with additional observability, security, and management capabilities. The Sail Operator manages the control plane, while addons are installed separately.
+
+<Note>
+  Follow the [official Istio documentation](https://istio.io/latest/docs/ops/integrations/) for the latest addon installation instructions.
+</Note>
+
+## Common Addons Overview
+
+This guide covers installing these popular addons:
+
+- **Prometheus** - Metrics collection and storage
+- **Jaeger** - Distributed tracing
+- **Kiali** - Service mesh observability console
+- **Bookinfo** - Sample application for testing
+
+## Prerequisites
+
+<Check>
+  - Sail Operator is installed
+  - Istio control plane is deployed
+  - kubectl access to your cluster
+</Check>
+
+## Installing Observability Addons
+
+### Prometheus
+
+Prometheus collects and stores metrics from Istio components and workloads.
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/master/samples/addons/prometheus.yaml
+```
+
+<Tip>
+  For production use, consider using [OpenShift's monitoring stack](/integrations/observability#openshift-monitoring-stack) or a managed Prometheus service.
+</Tip>
+
+### Jaeger
+
+Jaeger provides distributed tracing capabilities for your service mesh.
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/master/samples/addons/jaeger.yaml
+```
+
+<Info>
+  On OpenShift, use [OpenShift Distributed Tracing](/integrations/observability#distributed-tracing) instead of standalone Jaeger.
+</Info>
+
+### Accessing Prometheus and Jaeger
+
+<Tabs>
+  <Tab title="Port Forward">
+    ```bash
+    # Prometheus
+    kubectl port-forward -n istio-system svc/prometheus 9090:9090
+    
+    # Jaeger
+    kubectl port-forward -n istio-system svc/jaeger-query 16686:16686
+    ```
+    
+    - Prometheus: http://localhost:9090
+    - Jaeger: http://localhost:16686
+  </Tab>
+  
+  <Tab title="OpenShift Routes">
+    ```bash
+    # Expose Prometheus
+    kubectl expose svc prometheus -n istio-system
+    
+    # Expose Jaeger
+    kubectl expose svc jaeger-query -n istio-system
+    
+    # Get URLs
+    kubectl get routes -n istio-system
+    ```
+  </Tab>
+</Tabs>
+
+## Installing Kiali
+
+Kiali provides a graphical interface for visualizing and managing your service mesh.
+
+### On OpenShift
+
+<Steps>
+  <Step title="Install Kiali Operator">
+    Install through OperatorHub:
+    
+    1. Navigate to **Operators** → **OperatorHub**
+    2. Search for "Kiali"
+    3. Click **Install** and follow the prompts
+  </Step>
+  
+  <Step title="Create Kiali Instance">
+    See the [Kiali Integration guide](/integrations/observability#kiali-integration) for detailed configuration.
+  </Step>
+</Steps>
+
+### Using Helm
+
+For non-OpenShift environments:
+
+<Steps>
+  <Step title="Install Kiali Operator">
+    ```bash
+    helm install \
+      --namespace kiali-operator \
+      --create-namespace \
+      kiali-operator \
+      kiali/kiali-operator
+    ```
+  </Step>
+  
+  <Step title="Find Your Istio Revision">
+    ```bash
+    kubectl get istios
+    ```
+    
+    Example output:
+    ```
+    NAME      REVISIONS   READY   IN USE   ACTIVE REVISION   STATUS    VERSION      AGE
+    test      1           1       0        test              Healthy   v1.29.1      8m10s
+    ```
+  </Step>
+  
+  <Step title="Create Kiali Resource">
+    ```yaml
+    apiVersion: kiali.io/v1alpha1
+    kind: Kiali
+    metadata:
+      name: kiali
+      namespace: istio-system
+    spec:
+      external_services:
+        istio:
+          config_map_name: istio-test  # Use your revision name
+          istio_sidecar_injector_config_map_name: istio-sidecar-injector-test
+          istiod_deployment_name: istiod-test
+          url_service_version: 'http://istiod-test.istio-system:15014/version'
+        tracing:
+          enabled: true
+        grafana:
+          enabled: false
+    ```
+    
+    Apply the configuration:
+    
+    ```bash
+    kubectl apply -f kiali.yaml
+    ```
+  </Step>
+</Steps>
+
+### Accessing Kiali
+
+<Tabs>
+  <Tab title="OpenShift">
+    ```bash
+    # Get the Kiali route URL
+    echo https://$(kubectl get routes -n istio-system kiali -o jsonpath='{.spec.host}')
+    ```
+  </Tab>
+  
+  <Tab title="Port Forward">
+    ```bash
+    kubectl port-forward -n istio-system svc/kiali 20001:20001
+    ```
+    
+    Access at: http://localhost:20001
+  </Tab>
+</Tabs>
+
+## Deploying Sample Applications
+
+### Bookinfo Application
+
+Bookinfo is a sample microservices application that demonstrates Istio features.
+
+<Steps>
+  <Step title="Create and Label Namespace">
+    ```bash
+    kubectl create namespace bookinfo
+    kubectl label namespace bookinfo istio.io/rev=test  # Use your revision name
+    ```
+    
+    <Warning>
+      Replace `test` with your actual Istio revision name from `kubectl get istios`.
+    </Warning>
+  </Step>
+  
+  <Step title="Deploy Bookinfo">
+    ```bash
+    kubectl apply -n bookinfo -f https://raw.githubusercontent.com/istio/istio/master/samples/bookinfo/platform/kube/bookinfo.yaml
+    kubectl apply -n bookinfo -f https://raw.githubusercontent.com/istio/istio/master/samples/bookinfo/platform/kube/bookinfo-versions.yaml
+    ```
+  </Step>
+  
+  <Step title="Install Gateway API CRDs">
+    If not already installed:
+    
+    ```bash
+    kubectl get crd gateways.gateway.networking.k8s.io &> /dev/null || \
+      { kubectl kustomize "github.com/kubernetes-sigs/gateway-api/config/crd?ref=v1.1.0" | kubectl apply -f -; }
+    ```
+  </Step>
+  
+  <Step title="Create Gateway">
+    ```bash
+    kubectl apply -n bookinfo -f https://raw.githubusercontent.com/istio/istio/master/samples/bookinfo/gateway-api/bookinfo-gateway.yaml
+    kubectl wait -n bookinfo --for=condition=programmed gtw bookinfo-gateway
+    ```
+  </Step>
+  
+  <Step title="Get Gateway URL">
+    ```bash
+    export INGRESS_HOST=$(kubectl get gtw bookinfo-gateway -n bookinfo -o jsonpath='{.status.addresses[0].value}')
+    export INGRESS_PORT=$(kubectl get gtw bookinfo-gateway -n bookinfo -o jsonpath='{.spec.listeners[?(@.name=="http")].port}')
+    export GATEWAY_URL=$INGRESS_HOST:$INGRESS_PORT
+    echo "Bookinfo URL: http://${GATEWAY_URL}/productpage"
+    ```
+  </Step>
+</Steps>
+
+### Generating Traffic
+
+Generate continuous traffic to the Bookinfo application for testing observability:
+
+```bash
+# Generate traffic (runs until canceled with Ctrl+C)
+watch curl http://${GATEWAY_URL}/productpage &> /dev/null
+```
+
+<Tip>
+  Leave this running in a separate terminal while exploring Kiali, Prometheus, or Jaeger.
+</Tip>
+
+## Visualizing Your Mesh
+
+Once you have addons installed and traffic flowing, you can observe your mesh:
+
+<CardGroup cols={2}>
+  <Card title="Kiali Graph" icon="diagram-project">
+    View real-time traffic flow between services in your mesh
+  </Card>
+  
+  <Card title="Prometheus Metrics" icon="chart-bar">
+    Query and visualize request rates, latencies, and error rates
+  </Card>
+  
+  <Card title="Jaeger Traces" icon="route">
+    Investigate individual request paths through your services
+  </Card>
+  
+  <Card title="Istio Dashboard" icon="gauge">
+    Monitor control plane health and configuration status
+  </Card>
+</CardGroup>
+
+### Sample Kiali Workflows
+
+<Steps>
+  <Step title="Open Kiali">
+    Access Kiali using one of the methods described above.
+  </Step>
+  
+  <Step title="View Graph">
+    Navigate to **Graph** in the left menu and select the `bookinfo` namespace to see service topology.
+  </Step>
+  
+  <Step title="Inspect Services">
+    Click on any service node to view:
+    - Request rates and latencies
+    - Error rates
+    - Traffic routing configuration
+  </Step>
+  
+  <Step title="View Traces">
+    Select a workload and click the **Traces** tab to see distributed traces.
+  </Step>
+</Steps>
+
+## Additional Addons
+
+### Grafana
+
+Grafana provides rich dashboards for visualizing Istio metrics.
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/master/samples/addons/grafana.yaml
+```
+
+Access Grafana:
+
+```bash
+kubectl port-forward -n istio-system svc/grafana 3000:3000
+```
+
+View at: http://localhost:3000
+
+### Zipkin (Alternative to Jaeger)
+
+Zipkin is another distributed tracing system:
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/master/samples/addons/zipkin.yaml
+```
+
+## Production Considerations
+
+<Warning>
+  The sample addons are **not suitable for production** use. They are designed for demonstration and testing purposes.
+</Warning>
+
+For production deployments, consider:
+
+<CardGroup cols={2}>
+  <Card title="Managed Services" icon="cloud">
+    Use managed observability services:
+    - OpenShift Monitoring (Prometheus)
+    - OpenShift Distributed Tracing (Tempo)
+    - Cloud-native APM solutions
+  </Card>
+  
+  <Card title="High Availability" icon="server">
+    Configure for resilience:
+    - Multiple replicas
+    - Persistent storage
+    - Resource limits and requests
+  </Card>
+  
+  <Card title="Security" icon="lock">
+    Implement security measures:
+    - Authentication and authorization
+    - TLS for data in transit
+    - Network policies
+  </Card>
+  
+  <Card title="Scalability" icon="arrows-up-down">
+    Plan for scale:
+    - Appropriate resource allocation
+    - Metrics retention policies
+    - Distributed storage backends
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Addon pods not starting">
+    Check pod status and events:
+    
+    ```bash
+    kubectl get pods -n istio-system
+    kubectl describe pod <pod-name> -n istio-system
+    ```
+    
+    Common issues:
+    - Insufficient resources
+    - Image pull failures
+    - Missing dependencies
+  </Accordion>
+  
+  <Accordion title="Kiali not showing services">
+    Verify:
+    - Istio revision name is correct in Kiali config
+    - Prometheus is accessible
+    - Services have sidecars injected
+    
+    ```bash
+    kubectl get pods -n bookinfo -o jsonpath='{.items[*].spec.containers[*].name}'
+    ```
+    
+    Should show `istio-proxy` alongside application containers.
+  </Accordion>
+  
+  <Accordion title="No traces in Jaeger">
+    Ensure:
+    - Telemetry resource is configured
+    - Traffic is being generated
+    - Sampling rate is high enough for testing
+    
+    ```bash
+    kubectl get telemetry -A
+    ```
+  </Accordion>
+  
+  <Accordion title="Bookinfo not accessible">
+    Debug the gateway:
+    
+    ```bash
+    # Check gateway status
+    kubectl get gateway -n bookinfo
+    kubectl describe gateway bookinfo-gateway -n bookinfo
+    
+    # Check if gateway pod is running (for Gateway API)
+    kubectl get pods -n bookinfo
+    
+    # View gateway logs
+    kubectl logs -l gateway.networking.k8s.io/gateway-name=bookinfo-gateway -n bookinfo
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Traffic Management" icon="traffic-light" href="https://istio.io/latest/docs/tasks/traffic-management/">
+    Learn about routing, load balancing, and resilience
+  </Card>
+  
+  <Card title="Security Features" icon="shield" href="https://istio.io/latest/docs/tasks/security/">
+    Implement mTLS, authorization, and security policies
+  </Card>
+  
+  <Card title="Observability Deep Dive" icon="microscope" href="/integrations/observability">
+    Advanced monitoring and tracing configurations
+  </Card>
+  
+  <Card title="Gateway Setup" icon="door-open" href="/integrations/gateways">
+    Configure ingress and egress gateways
+  </Card>
+</CardGroup>

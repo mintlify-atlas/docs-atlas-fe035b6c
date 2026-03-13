@@ -1,0 +1,902 @@
+---
+title: Installation Guide
+description: Complete installation guide for Sail Operator on Kubernetes, OpenShift, and local environments
+---
+
+This guide provides detailed installation instructions for Sail Operator across different platforms and deployment scenarios. Choose the method that best fits your environment.
+
+## Prerequisites
+
+### Platform Requirements
+
+<Tabs>
+  <Tab title="Kubernetes">
+    - **Version**: Kubernetes 1.27 or later
+    - **Access**: Cluster admin permissions
+    - **Tools**: `kubectl` configured with cluster access
+    - **Optional**: Helm 3.6 or later
+  </Tab>
+  
+  <Tab title="OpenShift">
+    - **Version**: OpenShift Container Platform 4.14 or later
+    - **Access**: User with `cluster-admin` role
+    - **Console**: Access to OpenShift web console (for GUI installation)
+    - **CLI**: `kubectl` or `oc` CLI tool
+  </Tab>
+  
+  <Tab title="KIND (Local)">
+    - **Docker**: Docker or compatible container runtime
+    - **KIND**: [KIND](https://sigs.k8s.io/kind) installed
+    - **kubectl**: kubectl installed and in PATH
+    - **Resources**: 4GB+ RAM, 2+ CPU cores recommended
+  </Tab>
+</Tabs>
+
+### Network Requirements
+
+- Access to container registries:
+  - `quay.io/sail-dev` (Sail Operator images)
+  - `docker.io/istio` (Istio images)
+  - `gcr.io` (Istio release artifacts)
+- Outbound HTTPS access for Helm chart downloads (if using Helm)
+- Container network plugin supporting NetworkPolicies (recommended)
+
+### Verify Cluster Access
+
+Before proceeding, verify you can access your cluster:
+
+```bash
+kubectl cluster-info
+kubectl auth can-i create deployments --all-namespaces
+```
+
+Expected output should confirm cluster endpoint and return `yes` for the auth check.
+
+## Installation Methods
+
+### Method 1: Helm Installation (Recommended)
+
+Helm provides the simplest installation path for Kubernetes and is the recommended method.
+
+<Steps>
+  <Step title="Add Helm Repository">
+    Add the Sail Operator Helm repository:
+    
+    ```bash
+    helm repo add sail-operator https://istio-ecosystem.github.io/sail-operator
+    helm repo update
+    ```
+    
+    Verify the repository:
+    ```bash
+    helm search repo sail-operator --versions
+    ```
+  </Step>
+  
+  <Step title="Create Namespace">
+    Create a dedicated namespace for the operator:
+    
+    ```bash
+    kubectl create namespace sail-operator
+    ```
+    
+    <Note>
+      You can skip this step by using `--create-namespace` flag with helm install.
+    </Note>
+  </Step>
+  
+  <Step title="Install Operator">
+    Install the Sail Operator:
+    
+    ```bash
+    helm install sail-operator sail-operator/sail-operator \
+      --namespace sail-operator \
+      --version 1.29.0
+    ```
+    
+    For the latest version:
+    ```bash
+    helm install sail-operator sail-operator/sail-operator \
+      --namespace sail-operator
+    ```
+  </Step>
+  
+  <Step title="Verify Installation">
+    Check the Helm release status:
+    
+    ```bash
+    helm ls -n sail-operator
+    ```
+    
+    Expected output:
+    ```
+    NAME            NAMESPACE       REVISION  STATUS    CHART               APP VERSION
+    sail-operator   sail-operator   1         deployed  sail-operator-1.29.0  1.29.0
+    ```
+    
+    Verify the operator pod is running:
+    ```bash
+    kubectl get pods -n sail-operator
+    ```
+    
+    Expected output:
+    ```
+    NAME                             READY   STATUS    RESTARTS   AGE
+    sail-operator-79c7d9ffb9-xxxxx   1/1     Running   0          1m
+    ```
+  </Step>
+</Steps>
+
+#### Helm Configuration Options
+
+Customize the installation with values:
+
+```bash
+helm install sail-operator sail-operator/sail-operator \
+  --namespace sail-operator \
+  --set image.tag=1.29.0 \
+  --set resources.limits.cpu=500m \
+  --set resources.limits.memory=512Mi
+```
+
+Or create a `values.yaml` file:
+
+```yaml values.yaml
+image:
+  repository: quay.io/sail-dev/sail-operator
+  tag: 1.29.0
+  pullPolicy: IfNotPresent
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+replicas: 1
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+```
+
+Install with custom values:
+```bash
+helm install sail-operator sail-operator/sail-operator \
+  --namespace sail-operator \
+  --values values.yaml
+```
+
+### Method 2: kubectl Apply
+
+Install using raw Kubernetes manifests.
+
+<Steps>
+  <Step title="Download Manifests">
+    Download the installation manifests:
+    
+    ```bash
+    # Latest version
+    curl -L https://github.com/istio-ecosystem/sail-operator/releases/latest/download/install.yaml -o sail-operator.yaml
+    
+    # Specific version
+    curl -L https://github.com/istio-ecosystem/sail-operator/releases/download/v1.29.0/install.yaml -o sail-operator.yaml
+    ```
+  </Step>
+  
+  <Step title="Review Manifests">
+    Inspect the manifests before applying:
+    
+    ```bash
+    cat sail-operator.yaml
+    ```
+    
+    The manifests include:
+    - CustomResourceDefinitions (CRDs)
+    - Namespace
+    - ServiceAccount, Role, RoleBinding
+    - Deployment
+  </Step>
+  
+  <Step title="Apply Manifests">
+    Apply to your cluster:
+    
+    ```bash
+    kubectl apply -f sail-operator.yaml
+    ```
+    
+    Or apply directly from URL:
+    ```bash
+    kubectl apply -f https://github.com/istio-ecosystem/sail-operator/releases/download/v1.29.0/install.yaml
+    ```
+  </Step>
+  
+  <Step title="Verify Installation">
+    Check CRDs:
+    ```bash
+    kubectl get crd | grep sailoperator.io
+    ```
+    
+    Expected CRDs:
+    ```
+    istiocnis.sailoperator.io
+    istiorevisions.sailoperator.io
+    istiorevisiontags.sailoperator.io
+    istios.sailoperator.io
+    ztunnels.sailoperator.io
+    ```
+    
+    Check operator deployment:
+    ```bash
+    kubectl get deployment -n sail-operator
+    kubectl get pods -n sail-operator
+    ```
+  </Step>
+</Steps>
+
+### Method 3: OpenShift OperatorHub (Web Console)
+
+Install through the OpenShift web console.
+
+<Steps>
+  <Step title="Open OperatorHub">
+    1. Log into the OpenShift Container Platform web console
+    2. Navigate to **Operators** → **OperatorHub**
+    3. In the left navigation pane, ensure you're viewing cluster-wide operators
+  </Step>
+  
+  <Step title="Find Sail Operator">
+    1. In the search/filter box, type "sail"
+    2. Click on the **Sail Operator** tile
+    3. Review the operator description and details
+  </Step>
+  
+  <Step title="Install Operator">
+    1. Click **Install**
+    2. A community operator warning may appear - click **Continue**
+    3. On the Install Operator page:
+       - **Update Channel**: Select the desired channel (e.g., `0.1-nightly`)
+       - **Installation Mode**: All namespaces on the cluster (default)
+       - **Installed Namespace**: openshift-operators (default)
+       - **Update Approval**: Automatic (recommended) or Manual
+    4. Click **Install**
+  </Step>
+  
+  <Step title="Verify Installation">
+    1. Click **Operators** → **Installed Operators**
+    2. Locate **Sail Operator** in the list
+    3. Verify the **Status** column shows "Succeeded"
+    
+    Or via CLI:
+    ```bash
+    kubectl get csv -n openshift-operators | grep sailoperator
+    ```
+  </Step>
+</Steps>
+
+### Method 4: OpenShift OperatorHub (CLI)
+
+Install via OpenShift Operator Lifecycle Manager (OLM) using CLI.
+
+<Steps>
+  <Step title="Create Namespace">
+    Create the `openshift-operators` namespace if it doesn't exist:
+    
+    ```bash
+    kubectl create namespace openshift-operators
+    ```
+  </Step>
+  
+  <Step title="Create Subscription">
+    Create a subscription to install the operator:
+    
+    ```bash
+    kubectl apply -f - <<EOF
+    apiVersion: operators.coreos.com/v1alpha1
+    kind: Subscription
+    metadata:
+      name: sailoperator
+      namespace: openshift-operators
+    spec:
+      channel: "0.1-nightly"
+      installPlanApproval: Automatic
+      name: sailoperator
+      source: community-operators
+      sourceNamespace: openshift-marketplace
+    EOF
+    ```
+  </Step>
+  
+  <Step title="Verify Installation">
+    Check the ClusterServiceVersion (CSV):
+    
+    ```bash
+    kubectl get csv -n openshift-operators
+    ```
+    
+    Expected output:
+    ```
+    NAME                                     DISPLAY         VERSION                    PHASE
+    sailoperator.v0.1.0-nightly-2024-06-25   Sail Operator   0.1.0-nightly-2024-06-25   Succeeded
+    ```
+    
+    The `PHASE` should show `Succeeded`.
+  </Step>
+</Steps>
+
+### Method 5: Build from Source
+
+For development or testing unreleased changes.
+
+<Steps>
+  <Step title="Clone Repository">
+    ```bash
+    git clone https://github.com/istio-ecosystem/sail-operator.git
+    cd sail-operator
+    ```
+  </Step>
+  
+  <Step title="Install CRDs">
+    ```bash
+    make install
+    ```
+  </Step>
+  
+  <Step title="Deploy Operator">
+    Deploy to your cluster:
+    
+    ```bash
+    make deploy
+    ```
+    
+    For local KIND cluster:
+    ```bash
+    export HUB=localhost:5000
+    make deploy
+    ```
+    
+    Or deploy via OLM:
+    ```bash
+    make deploy-olm
+    ```
+  </Step>
+  
+  <Step title="Run Locally (Optional)">
+    For development, run the operator locally:
+    
+    ```bash
+    make run
+    ```
+    
+    <Warning>
+      This runs the operator outside the cluster and connects to your kubeconfig cluster. Only for development.
+    </Warning>
+  </Step>
+</Steps>
+
+## Platform-Specific Installation
+
+### KIND (Local Development)
+
+<Steps>
+  <Step title="Create KIND Cluster">
+    Create a cluster with the operator:
+    
+    ```bash
+    make cluster
+    ```
+    
+    This:
+    - Creates a KIND cluster
+    - Sets up a local registry
+    - Builds and loads the operator image
+    - Deploys the operator
+    
+    For multi-cluster setup:
+    ```bash
+    make cluster MULTICLUSTER=true
+    ```
+  </Step>
+  
+  <Step title="Configure kubectl">
+    KIND automatically configures kubectl. Verify:
+    
+    ```bash
+    kubectl cluster-info --context kind-kind
+    ```
+  </Step>
+  
+  <Step title="Deploy Operator">
+    If you created a basic KIND cluster without `make cluster`:
+    
+    ```bash
+    export HUB=localhost:5000
+    make deploy
+    ```
+  </Step>
+</Steps>
+
+<Info>
+  KIND is ideal for local testing but not suitable for production workloads.
+</Info>
+
+### Google Kubernetes Engine (GKE)
+
+<Steps>
+  <Step title="Create GKE Cluster">
+    ```bash
+    gcloud container clusters create istio-cluster \
+      --cluster-version=1.27 \
+      --machine-type=n1-standard-4 \
+      --num-nodes=3 \
+      --region=us-central1
+    ```
+  </Step>
+  
+  <Step title="Get Credentials">
+    ```bash
+    gcloud container clusters get-credentials istio-cluster --region=us-central1
+    ```
+  </Step>
+  
+  <Step title="Grant Cluster Admin">
+    ```bash
+    kubectl create clusterrolebinding cluster-admin-binding \
+      --clusterrole=cluster-admin \
+      --user=$(gcloud config get-value core/account)
+    ```
+  </Step>
+  
+  <Step title="Install Operator">
+    Follow the Helm installation method above.
+  </Step>
+</Steps>
+
+### Amazon EKS
+
+<Steps>
+  <Step title="Create EKS Cluster">
+    ```bash
+    eksctl create cluster \
+      --name istio-cluster \
+      --version 1.27 \
+      --region us-east-1 \
+      --nodegroup-name standard-workers \
+      --node-type t3.large \
+      --nodes 3
+    ```
+  </Step>
+  
+  <Step title="Update kubeconfig">
+    ```bash
+    aws eks update-kubeconfig --name istio-cluster --region us-east-1
+    ```
+  </Step>
+  
+  <Step title="Install Operator">
+    Follow the Helm installation method above.
+  </Step>
+</Steps>
+
+### Azure AKS
+
+<Steps>
+  <Step title="Create AKS Cluster">
+    ```bash
+    az aks create \
+      --resource-group myResourceGroup \
+      --name istio-cluster \
+      --kubernetes-version 1.27 \
+      --node-count 3 \
+      --node-vm-size Standard_D4s_v3
+    ```
+  </Step>
+  
+  <Step title="Get Credentials">
+    ```bash
+    az aks get-credentials --resource-group myResourceGroup --name istio-cluster
+    ```
+  </Step>
+  
+  <Step title="Install Operator">
+    Follow the Helm installation method above.
+  </Step>
+</Steps>
+
+## Deploy Istio Control Plane
+
+After installing the operator, deploy an Istio control plane.
+
+### Sidecar Mode Deployment
+
+<CodeGroup>
+```yaml istio-sidecar.yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+    inactiveRevisionDeletionGracePeriodSeconds: 30
+```
+
+```bash Deploy
+kubectl create namespace istio-system
+kubectl apply -f istio-sidecar.yaml
+```
+
+```bash Verify
+kubectl get istio default -o wide
+kubectl get pods -n istio-system
+```
+</CodeGroup>
+
+<Info>
+  On **OpenShift**, you must also deploy an `IstioCNI` resource. See the Ambient Mode section below.
+</Info>
+
+### Ambient Mode Deployment
+
+<CodeGroup>
+```yaml istio-ambient.yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+  updateStrategy:
+    type: InPlace
+    inactiveRevisionDeletionGracePeriodSeconds: 30
+  values:
+    pilot:
+      trustedZtunnelNamespace: "ztunnel"
+```
+
+```yaml istiocni-ambient.yaml
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  profile: ambient
+  namespace: istio-cni
+```
+
+```yaml ztunnel-ambient.yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+```
+
+```bash Deploy All
+kubectl create namespace istio-system
+kubectl create namespace istio-cni
+kubectl create namespace ztunnel
+
+kubectl apply -f istio-ambient.yaml
+kubectl apply -f istiocni-ambient.yaml
+kubectl apply -f ztunnel-ambient.yaml
+```
+
+```bash Verify
+kubectl get istio,istiocni,ztunnel
+kubectl get pods -n istio-system
+kubectl get pods -n istio-cni
+kubectl get pods -n ztunnel
+```
+</CodeGroup>
+
+## Configuration Options
+
+### Version Selection
+
+<Tabs>
+  <Tab title="Specific Version">
+    ```yaml
+    spec:
+      version: v1.29.1
+    ```
+  </Tab>
+  
+  <Tab title="Latest Patch (Alias)">
+    ```yaml
+    spec:
+      version: v1.29-latest  # Always latest 1.29.x
+    ```
+  </Tab>
+  
+  <Tab title="Default (Omit)">
+    ```yaml
+    spec:
+      # version omitted - operator installs latest supported
+    ```
+  </Tab>
+</Tabs>
+
+### Update Strategies
+
+<Tabs>
+  <Tab title="InPlace (Default)">
+    Immediately replaces control plane with new version:
+    
+    ```yaml
+    spec:
+      updateStrategy:
+        type: InPlace
+        inactiveRevisionDeletionGracePeriodSeconds: 30
+    ```
+    
+    - **Use case**: Non-production, quick updates
+    - **Downtime**: Brief interruption possible
+    - **Workloads**: No re-injection needed
+  </Tab>
+  
+  <Tab title="RevisionBased">
+    Creates separate control plane for canary upgrades:
+    
+    ```yaml
+    spec:
+      updateStrategy:
+        type: RevisionBased
+    ```
+    
+    - **Use case**: Production, zero-downtime upgrades
+    - **Process**: Deploy new revision, migrate workloads, delete old
+    - **Workloads**: Requires re-injection or revision tag update
+  </Tab>
+</Tabs>
+
+### Resource Limits
+
+```yaml
+spec:
+  values:
+    pilot:
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2048Mi
+        limits:
+          cpu: 1000m
+          memory: 4096Mi
+```
+
+### High Availability
+
+```yaml
+spec:
+  values:
+    pilot:
+      replicaCount: 3
+      autoscaleEnabled: true
+      autoscaleMin: 2
+      autoscaleMax: 5
+```
+
+### Mesh Configuration
+
+```yaml
+spec:
+  values:
+    meshConfig:
+      accessLogFile: /dev/stdout
+      accessLogEncoding: JSON
+      enableTracing: true
+      defaultConfig:
+        tracing:
+          sampling: 100
+```
+
+## Verification and Testing
+
+### Check Operator Status
+
+```bash
+# Operator pod
+kubectl get pods -n sail-operator
+kubectl logs -n sail-operator deployment/sail-operator
+
+# CRDs
+kubectl get crd | grep sailoperator.io
+
+# API resources
+kubectl api-resources | grep sailoperator.io
+```
+
+### Check Control Plane Status
+
+```bash
+# Istio resource
+kubectl get istio
+kubectl describe istio default
+
+# Control plane pods
+kubectl get pods -n istio-system
+
+# Webhooks
+kubectl get mutatingwebhookconfigurations
+kubectl get validatingwebhookconfigurations
+```
+
+### Test Injection
+
+Create a test pod to verify sidecar injection:
+
+```bash
+kubectl create namespace test
+kubectl label namespace test istio-injection=enabled
+kubectl run nginx --image=nginx -n test
+kubectl get pod nginx -n test
+```
+
+Expected: `2/2` containers (app + sidecar).
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="CRDs not found">
+    Verify CRDs are installed:
+    ```bash
+    kubectl get crd | grep sailoperator.io
+    ```
+    
+    If missing, reinstall:
+    ```bash
+    helm upgrade --install sail-operator sail-operator/sail-operator -n sail-operator
+    ```
+  </Accordion>
+  
+  <Accordion title="Operator pod CrashLoopBackOff">
+    Check logs for errors:
+    ```bash
+    kubectl logs -n sail-operator deployment/sail-operator --previous
+    ```
+    
+    Common causes:
+    - Insufficient RBAC permissions
+    - Resource limits too low
+    - Network connectivity issues
+  </Accordion>
+  
+  <Accordion title="Istio resource not reconciling">
+    Check operator logs:
+    ```bash
+    kubectl logs -n sail-operator deployment/sail-operator -f
+    ```
+    
+    Check Istio resource status:
+    ```bash
+    kubectl describe istio default
+    ```
+    
+    Look for events and condition messages.
+  </Accordion>
+  
+  <Accordion title="Version not found error">
+    Check supported versions:
+    ```bash
+    kubectl get cm -n sail-operator
+    ```
+    
+    Verify the version exists in `versions.yaml` in the operator.
+    
+    Use a supported version or version alias (e.g., `v1.29-latest`).
+  </Accordion>
+  
+  <Accordion title="OpenShift: Security Context Constraints">
+    IstioCNI requires privileged access. Verify SCC:
+    
+    ```bash
+    oc get scc privileged -o yaml
+    ```
+    
+    Ensure the CNI service account has access:
+    ```bash
+    oc adm policy add-scc-to-user privileged -z istio-cni -n istio-cni
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Upgrading the Operator
+
+### Helm Upgrade
+
+```bash
+helm repo update
+helm upgrade sail-operator sail-operator/sail-operator \
+  --namespace sail-operator \
+  --version 1.29.0
+```
+
+### kubectl Upgrade
+
+```bash
+kubectl apply -f https://github.com/istio-ecosystem/sail-operator/releases/download/v1.29.0/install.yaml
+```
+
+<Note>
+  Upgrading the operator does NOT automatically upgrade Istio control planes. Control plane versions are managed independently via the `Istio` resource `spec.version` field.
+</Note>
+
+## Uninstallation
+
+### Remove Istio Control Plane
+
+```bash
+# Delete Istio
+kubectl delete istio default
+
+# Delete ambient components (if installed)
+kubectl delete istiocni default
+kubectl delete ztunnel default
+
+# Delete namespaces
+kubectl delete namespace istio-system istio-cni ztunnel
+```
+
+### Uninstall Operator
+
+<Tabs>
+  <Tab title="Helm">
+    ```bash
+    helm uninstall sail-operator -n sail-operator
+    kubectl delete namespace sail-operator
+    ```
+  </Tab>
+  
+  <Tab title="kubectl">
+    ```bash
+    kubectl delete -f https://github.com/istio-ecosystem/sail-operator/releases/download/v1.29.0/install.yaml
+    ```
+  </Tab>
+  
+  <Tab title="OpenShift Console">
+    1. Navigate to **Operators** → **Installed Operators**
+    2. Find **Sail Operator**
+    3. Click the options menu (⋮) and select **Uninstall Operator**
+    4. Confirm the uninstallation
+  </Tab>
+</Tabs>
+
+### Delete CRDs (Optional)
+
+<Warning>
+  Deleting CRDs will also delete all custom resources (Istio, IstioCNI, etc.). Only do this if you're completely removing the operator.
+</Warning>
+
+```bash
+kubectl get crds -o name | grep sailoperator.io | xargs kubectl delete
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configure Gateways" icon="door-open" href="/integrations/gateways">
+    Set up ingress and egress gateways
+  </Card>
+  
+  <Card title="Traffic Management" icon="route" href="https://istio.io/latest/docs/tasks/traffic-management/">
+    Implement routing and load balancing
+  </Card>
+  
+  <Card title="Security Policies" icon="shield" href="https://istio.io/latest/docs/tasks/security/">
+    Configure mTLS and authorization
+  </Card>
+  
+  <Card title="Multi-Cluster" icon="sitemap" href="/advanced/multi-cluster">
+    Deploy across multiple clusters
+  </Card>
+</CardGroup>

@@ -1,0 +1,334 @@
+---
+title: Upgrades
+description: Learn how to upgrade Istio control planes and components using the Sail Operator
+---
+
+The Sail Operator supports two update strategies for upgrading Istio: **InPlace** and **RevisionBased**. Choose the right strategy based on your tolerance for downtime and need for canary deployments.
+
+## Update Strategies
+
+### InPlace Updates
+
+With InPlace updates, the existing control plane is replaced with a new version. Workload sidecars immediately connect to the new control plane without needing to move between instances.
+
+**When to use:**
+- Development and testing environments
+- When brief downtime is acceptable
+- Simpler upgrade process is preferred
+
+**Configuration:**
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+  version: v1.29.1
+```
+
+<Warning>
+InPlace updates restart control plane pods, which may cause brief service disruptions. Configure istiod with high availability (HA) to minimize downtime.
+</Warning>
+
+**Upgrade procedure:**
+
+1. Patch the Istio resource with the new version:
+
+```bash
+kubectl patch istio default -n istio-system --type='merge' -p '{"spec":{"version":"v1.29.1"}}'
+```
+
+2. Verify the control plane is updated:
+
+```bash
+kubectl get istio -n istio-system
+```
+
+3. Restart workload deployments to inject new sidecar versions:
+
+```bash
+kubectl rollout restart deployment -n <namespace>
+```
+
+4. Confirm sidecars are using the new version:
+
+```bash
+istioctl proxy-status
+```
+
+### RevisionBased Updates
+
+With RevisionBased updates, a new control plane instance is created for each version change. The old control plane remains until workloads migrate to the new version, enabling canary-style upgrades.
+
+**When to use:**
+- Production environments
+- When zero-downtime upgrades are required
+- Gradual migration and testing is needed
+- Running canary deployments
+
+**Configuration:**
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  updateStrategy:
+    type: RevisionBased
+    inactiveRevisionDeletionGracePeriodSeconds: 30
+  version: v1.29.0
+```
+
+**Upgrade procedure:**
+
+1. Update the Istio resource to the new version:
+
+```bash
+kubectl patch istio default -n istio-system --type='merge' -p '{"spec":{"version":"v1.29.1"}}'
+```
+
+2. Verify both control plane revisions are running:
+
+```bash
+kubectl get istiorevision
+kubectl get pods -n istio-system
+```
+
+You should see two istiod pods running, one for each revision.
+
+3. Update namespace labels to use the new revision:
+
+```bash
+kubectl label namespace <namespace> istio.io/rev=default-v1-29-1 --overwrite
+```
+
+4. Restart workloads in the namespace:
+
+```bash
+kubectl rollout restart deployment -n <namespace>
+```
+
+5. Verify sidecars connect to the new control plane:
+
+```bash
+istioctl proxy-status
+```
+
+6. After the grace period expires, the old revision is automatically deleted.
+
+### Using IstioRevisionTag
+
+For easier management with RevisionBased updates, use an `IstioRevisionTag` to avoid updating namespace labels manually:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: IstioRevisionTag
+metadata:
+  name: stable
+spec:
+  targetRef:
+    kind: Istio
+    name: default
+```
+
+Label namespaces with `istio-injection=enabled` instead of a specific revision. The tag automatically points to the active revision.
+
+## Ambient Mode Updates
+
+<Warning>
+**Only the InPlace strategy is supported for ambient mode.** This is due to ZTunnel's cluster-wide singleton architecture - only one ztunnel instance can run in the cluster at a time.
+</Warning>
+
+**Update sequence for ambient mode:**
+
+1. **Istio control plane** - Patch version in Istio resource
+2. **IstioCNI** - Patch to same version
+3. **ZTunnel** - Patch to same version
+
+### Update Control Plane
+
+```bash
+kubectl patch istio default -n istio-system --type='merge' -p '{"spec":{"version":"v1.29.1"}}'
+kubectl wait --for=condition=Ready istio/default --timeout=5m
+```
+
+### Update IstioCNI
+
+```bash
+kubectl patch istiocni default --type='merge' -p '{"spec":{"version":"v1.29.1"}}'
+kubectl wait --for=condition=Ready istiocnis/default --timeout=5m
+```
+
+<Note>
+The CNI at version 1.x is compatible with the control plane at version 1.x+1 and 1.x. Always upgrade the control plane before IstioCNI.
+</Note>
+
+### Update ZTunnel
+
+```bash
+kubectl patch ztunnel default --type='merge' -p '{"spec":{"version":"v1.29.1"}}'
+kubectl rollout status daemonset/ztunnel -n ztunnel
+kubectl wait --for=condition=Ready ztunnel/default --timeout=10m
+```
+
+<Warning>
+ZTunnel DaemonSet updates may cause long-lived TCP connections on the upgraded node to reset. See special considerations below.
+</Warning>
+
+### ZTunnel Update Considerations
+
+ZTunnel operates at Layer 4 and cannot transfer connection state. During updates, the DaemonSet uses a RollingUpdate strategy, processing one node at a time:
+
+1. New ztunnel pod starts on a node (while old one runs)
+2. New ztunnel establishes listeners and marks itself "ready"
+3. Old ztunnel receives SIGTERM and starts draining
+4. Old ztunnel closes listeners (only new ztunnel accepts connections)
+5. Old ztunnel continues processing existing connections
+6. After drain period, old ztunnel forcefully terminates outstanding connections
+
+**Option 1: High termination grace period**
+
+Configure a longer grace period to allow connections to close naturally:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+  values:
+    ztunnel:
+      terminationGracePeriodSeconds: 300  # 5 minutes
+```
+
+**Option 2: Node draining (safer for long-lived connections)**
+
+Use OnDelete update strategy for manual control:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: ztunnel
+  values:
+    ztunnel:
+      updateStrategy:
+        type: OnDelete
+```
+
+Then perform a controlled upgrade:
+
+```bash
+# For each node:
+kubectl drain <node> --ignore-daemonsets
+kubectl delete pod ztunnel-<xxx> -n ztunnel
+kubectl wait --for=condition=Ready pod -l app=ztunnel -n ztunnel
+kubectl uncordon <node>
+```
+
+### Verify Ambient Workloads
+
+After updating all components:
+
+```bash
+# Check workload status
+kubectl get pods -n <namespace>
+
+# Verify ZTunnel is processing traffic
+istioctl ztunnel-config workloads --namespace ztunnel | grep <namespace>
+
+# Test connectivity
+kubectl exec <pod> -n <namespace> -- curl -sS <service>:<port>
+```
+
+### Update Waypoint Proxies
+
+Waypoint proxies automatically update to use the new control plane. Verify after upgrade:
+
+```bash
+# List waypoint proxies
+kubectl get gateway -n <namespace>
+
+# Verify waypoint pods are running
+kubectl get pods -n <namespace> -l gateway.networking.k8s.io/gateway-name=<waypoint-name>
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Configure High Availability" icon="server">
+    Deploy istiod with multiple replicas to minimize downtime during InPlace upgrades. See the monitoring page for HA configuration.
+  </Card>
+  
+  <Card title="Test Version Compatibility" icon="vial">
+    Always test version combinations in non-production environments first, especially when mixing component versions.
+  </Card>
+  
+  <Card title="Use Revision Tags" icon="tag">
+    For RevisionBased updates, use IstioRevisionTag to simplify namespace management and reduce manual label updates.
+  </Card>
+  
+  <Card title="Monitor During Upgrades" icon="chart-line">
+    Watch metrics and logs during upgrades to catch issues early. Use istioctl proxy-status to verify sidecar connectivity.
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### Sidecars not connecting to new control plane
+
+Verify namespace labels match the revision:
+
+```bash
+kubectl get namespace <namespace> --show-labels
+kubectl get istiorevision
+```
+
+### Old revision not deleting
+
+Check if workloads still reference the old revision:
+
+```bash
+kubectl get istiorevision
+istioctl proxy-status
+```
+
+Ensure all workloads have been restarted and the grace period has elapsed.
+
+### ZTunnel connection issues after upgrade
+
+Check ztunnel logs for errors:
+
+```bash
+kubectl logs -n ztunnel -l app=ztunnel --tail=100
+```
+
+Verify workloads have network connectivity:
+
+```bash
+istioctl ztunnel-config workloads -n ztunnel
+```
+
+## Version Compatibility
+
+- Sail Operator supports the current and two previous minor Istio versions (n-2)
+- ZTunnel version 1.x is compatible with control plane version 1.x+1 and 1.x
+- IstioCNI version 1.x is compatible with control plane version 1.x+1 and 1.x
+- Waypoint proxies automatically reference the active control plane revision
+
+## Related Resources
+
+- [Monitoring](/operations/monitoring) - Configure metrics and observability
+- [Troubleshooting](/operations/troubleshooting) - Diagnose common issues
+- [Istio Upgrade Documentation](https://istio.io/latest/docs/setup/upgrade/)

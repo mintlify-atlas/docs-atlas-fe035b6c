@@ -1,0 +1,480 @@
+---
+title: Configuration Profiles
+description: Use built-in profiles to configure Istio for different deployment scenarios
+---
+
+Profiles are pre-configured sets of Helm values designed for specific deployment scenarios. The Sail Operator includes several built-in profiles that configure Istio components for common use cases.
+
+## Overview
+
+Profiles provide:
+
+- **Quick start** - Deploy Istio with sensible defaults
+- **Best practices** - Pre-configured settings for specific scenarios
+- **Consistency** - Standardized configurations across environments
+- **Extensibility** - Base configuration that you can customize
+
+## Available Profiles
+
+### default
+
+The standard production configuration.
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  # profile: default is implicit
+```
+
+**Includes:**
+- Istiod control plane
+- Configuration validation enabled
+- Default resource limits
+- Production-ready settings
+
+**Use when:**
+- Deploying to production
+- Using sidecar injection mode
+- Need a stable, supported configuration
+
+### ambient
+
+Configures Istio for ambient mesh mode.
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: ambient
+```
+
+**Includes:**
+- Istiod configured for ambient mode
+- Requires IstioCNI and ZTunnel resources
+- Ztunnel configuration presets
+
+**Use when:**
+- Deploying ambient mesh
+- Want sidecar-less service mesh
+- Need transparent mTLS without proxies
+
+<Note>
+When using the ambient profile, you must also deploy IstioCNI and ZTunnel resources. See [Ambient Mode](/deployment/ambient-mode).
+</Note>
+
+### demo
+
+Higher trace sampling and access logging for demonstrations.
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: demo
+```
+
+**Includes:**
+- 100% trace sampling
+- Access logs enabled
+- Lower resource limits
+- Features enabled for visibility
+
+**Use when:**
+- Running demonstrations
+- Testing Istio features
+- Learning and development
+
+<Warning>
+The demo profile is not suitable for production. It has high resource usage due to extensive logging and tracing.
+</Warning>
+
+### minimal/empty
+
+Minimal Istio installation with most features disabled.
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: empty
+```
+
+**Includes:**
+- Istiod only
+- Minimal configuration
+- Most features disabled
+
+**Use when:**
+- Building custom configurations
+- Need fine-grained control
+- Deploying specialized use cases
+
+### openshift
+
+Optimized for Red Hat OpenShift.
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: openshift
+```
+
+**Includes:**
+- OpenShift-specific security contexts
+- CNI enabled by default
+- Platform detection set to "openshift"
+- Compatible with OpenShift security policies
+
+**Use when:**
+- Deploying on OpenShift
+- Need OpenShift integration
+
+<Info>
+On OpenShift, the platform is automatically detected, and the openshift profile is applied by default even if not specified.
+</Info>
+
+### openshift-ambient
+
+Ambient mesh for OpenShift.
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: openshift-ambient
+```
+
+**Includes:**
+- Ambient mode configuration
+- OpenShift-specific settings
+- CNI integration
+
+### remote
+
+For remote clusters in a multi-cluster mesh.
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: remote
+```
+
+**Includes:**
+- Minimal local control plane
+- Configuration to connect to remote istiod
+- Injection webhook configuration
+
+**Use when:**
+- Setting up multi-cluster mesh
+- Remote cluster with external control plane
+
+### preview
+
+Experimental features and configurations.
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: preview
+```
+
+**Includes:**
+- Experimental features enabled
+- Preview functionality
+- Not guaranteed stable
+
+<Warning>
+The preview profile enables experimental features that may change or be removed. Do not use in production.
+</Warning>
+
+## Profile Layering
+
+Profiles are applied in layers:
+
+1. **default** profile is always applied first
+2. Platform-specific profile (e.g., **openshift**) is applied on top
+3. User-specified profile is applied last
+4. Custom values in `spec.values` override everything
+
+### Example: OpenShift with Custom Values
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: demo  # Applied after default and openshift
+  values:
+    pilot:
+      traceSampling: 50.0  # Overrides demo profile's 100%
+```
+
+Final configuration:
+1. `default` profile
+2. `openshift` profile (auto-detected)
+3. `demo` profile
+4. Custom value: `traceSampling: 50.0`
+
+## Customizing Profiles
+
+You can customize any profile using `spec.values`:
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: default
+  values:
+    # Customize the default profile
+    pilot:
+      autoscaleEnabled: true
+      autoscaleMin: 3
+      autoscaleMax: 10
+    global:
+      proxy:
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+```
+
+## Profile Contents
+
+Profiles are stored as YAML files in the operator's resources:
+
+```bash
+# View profile contents
+kubectl exec -n istio-system deploy/istio-operator -- \
+  cat /var/lib/istio/resources/v1.29.1/profiles/default.yaml
+```
+
+### Profile Structure
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+spec:
+  values:
+    global:
+      istioNamespace: istio-system
+      configValidation: true
+    pilot:
+      autoscaleEnabled: true
+    # ... more settings
+```
+
+## Version-Specific Profiles
+
+Profiles may vary between Istio versions:
+
+- Different default values
+- New or removed features
+- Changed resource requirements
+
+Always check profile contents for your specific version:
+
+```bash
+ls /var/lib/istio/resources/v1.29.1/profiles/
+```
+
+## Common Profile Patterns
+
+### High Availability Production
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: default
+  values:
+    pilot:
+      autoscaleEnabled: true
+      autoscaleMin: 3
+      autoscaleMax: 10
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: istiod
+              topologyKey: kubernetes.io/hostname
+```
+
+### Development/Testing
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: demo
+  values:
+    pilot:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 512Mi
+    global:
+      proxy:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 64Mi
+```
+
+### Minimal Production
+
+```yaml
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.29.1
+  namespace: istio-system
+  profile: default
+  values:
+    telemetry:
+      enabled: false
+    meshConfig:
+      accessLogFile: ""  # Disable access logs
+```
+
+## Comparison Table
+
+| Feature | default | demo | ambient | openshift | remote |
+|---------|---------|------|---------|-----------|--------|
+| Istiod | Yes | Yes | Yes | Yes | Minimal |
+| Autoscaling | Yes | No | Yes | Yes | N/A |
+| Access Logs | No | Yes | No | No | No |
+| Trace Sampling | 1% | 100% | 1% | 1% | 1% |
+| CNI Required | No | No | Yes | Yes | No |
+| Production Ready | Yes | No | Yes | Yes | Yes |
+
+## Selecting a Profile
+
+<Steps>
+  <Step title="Identify your use case">
+    Determine whether you need production, development, or specialized deployment.
+  </Step>
+  <Step title="Choose deployment mode">
+    Decide between sidecar mode (default) or ambient mode.
+  </Step>
+  <Step title="Consider platform">
+    Select platform-specific profile if on OpenShift.
+  </Step>
+  <Step title="Apply customizations">
+    Add custom values in `spec.values` to tune the profile.
+  </Step>
+</Steps>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Start with Default" icon="flag-checkered">
+    Use the default profile unless you have specific requirements.
+  </Card>
+  <Card title="Don't Modify Profiles" icon="lock">
+    Use spec.values to customize rather than forking profiles.
+  </Card>
+  <Card title="Test Changes" icon="flask">
+    Validate profile changes in dev before production.
+  </Card>
+  <Card title="Document Customizations" icon="file-lines">
+    Keep track of why you deviated from profile defaults.
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### Profile Not Found
+
+```bash
+# Check available profiles
+kubectl exec -n istio-system deploy/istio-operator -- \
+  ls /var/lib/istio/resources/v1.29.1/profiles/
+```
+
+### Profile Not Applied
+
+```bash
+# Verify the rendered configuration
+kubectl get istiorevision -o yaml | grep -A 50 "values:"
+```
+
+### Unexpected Configuration
+
+```bash
+# Check profile layering
+kubectl describe istio default
+
+# Verify platform detection
+kubectl get istio default -o jsonpath='{.spec.values.global.platform}'
+```
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Helm Values" icon="gear" href="/configuration/helm-values">
+    Learn about customizing profiles with Helm values
+  </Card>
+  <Card title="Deployment Modes" icon="network-wired" href="/deployment/sidecar-mode">
+    Choose the right deployment mode for your mesh
+  </Card>
+  <Card title="OpenShift Integration" icon="redhat" href="/integrations/openshift">
+    Deploy on Red Hat OpenShift
+  </Card>
+  <Card title="Ambient Mode" icon="circle-nodes" href="/deployment/ambient-mode">
+    Use ambient mesh without sidecars
+  </Card>
+</CardGroup>

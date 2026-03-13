@@ -1,0 +1,352 @@
+---
+title: Multiple Meshes on a Single Cluster
+description: Deploy and manage multiple isolated Istio service meshes on the same Kubernetes cluster
+---
+
+The Sail Operator supports running multiple independent Istio service meshes on a single Kubernetes cluster. Each mesh operates with its own control plane and manages a separate set of workloads, providing strong isolation for multi-tenancy scenarios.
+
+## Overview
+
+Multiple meshes on a single cluster enable:
+
+- **Multi-tenancy** - Different teams or applications with isolated service meshes
+- **Testing and staging** - Production and non-production meshes on the same infrastructure
+- **Gradual migration** - Run old and new mesh versions side-by-side
+- **Compliance and security** - Separate meshes for different security domains
+
+Each mesh has its own:
+- Control plane (istiod) in a dedicated namespace
+- Certificate authority and root certificates
+- Configuration and policies
+- Set of managed workloads
+
+## How It Works
+
+Namespace labels control which mesh manages which workloads:
+
+- **`istio.io/rev`** - Determines which control plane injects sidecars
+- **Discovery selectors** - Define which namespaces a control plane monitors
+- **Mesh ID** - Groups resources into logical service meshes
+
+<Warning>
+Discovery selectors from different control planes must NOT overlap. Each namespace can only be managed by one control plane.
+</Warning>
+
+## Prerequisites
+
+- Kubernetes cluster (v1.23+)
+- Sail Operator installed
+- `kubectl` configured to access your cluster
+- `istioctl` CLI tool for verification
+
+## Setup
+
+This guide demonstrates setting up two meshes:
+- **mesh1** in namespace `istio-system1` managing namespace `app1`
+- **mesh2** in namespace `istio-system2` managing namespaces `app2a` and `app2b`
+
+### Deploy Control Planes
+
+<Steps>
+  <Step title="Create and Deploy mesh1">
+    ```bash
+    kubectl create namespace istio-system1
+    kubectl label namespace istio-system1 mesh=mesh1
+    
+    kubectl apply -f - <<EOF
+    apiVersion: sailoperator.io/v1
+    kind: Istio
+    metadata:
+      name: mesh1
+    spec:
+      namespace: istio-system1
+      version: v1.29.1
+      values:
+        meshConfig:
+          discoverySelectors:
+          - matchLabels:
+              mesh: mesh1
+    EOF
+    ```
+    
+    The `discoverySelectors` configuration ensures mesh1 only discovers and manages namespaces labeled with `mesh=mesh1`.
+  </Step>
+
+  <Step title="Create and Deploy mesh2">
+    ```bash
+    kubectl create namespace istio-system2
+    kubectl label namespace istio-system2 mesh=mesh2
+    
+    kubectl apply -f - <<EOF
+    apiVersion: sailoperator.io/v1
+    kind: Istio
+    metadata:
+      name: mesh2
+    spec:
+      namespace: istio-system2
+      version: v1.29.1
+      values:
+        meshConfig:
+          discoverySelectors:
+          - matchLabels:
+              mesh: mesh2
+    EOF
+    ```
+  </Step>
+
+  <Step title="Configure Strict mTLS">
+    Create peer authentication policies to enforce mTLS within each mesh:
+    
+    ```yaml mesh1 Policy
+    kubectl apply -f - <<EOF
+    apiVersion: security.istio.io/v1
+    kind: PeerAuthentication
+    metadata:
+      name: default
+      namespace: istio-system1
+    spec:
+      mtls:
+        mode: STRICT
+    EOF
+    ```
+    
+    ```yaml mesh2 Policy
+    kubectl apply -f - <<EOF
+    apiVersion: security.istio.io/v1
+    kind: PeerAuthentication
+    metadata:
+      name: default
+      namespace: istio-system2
+    spec:
+      mtls:
+        mode: STRICT
+    EOF
+    ```
+    
+    This ensures each mesh uses its own CA and workloads from different meshes cannot communicate.
+  </Step>
+</Steps>
+
+### Verify Control Planes
+
+Check that both control planes are healthy:
+
+```bash
+kubectl get istios
+```
+
+```
+NAME    REVISIONS   READY   IN USE   ACTIVE REVISION   STATUS    VERSION
+mesh1   1           1       0        mesh1             Healthy   v1.29.1
+mesh2   1           1       0        mesh2             Healthy   v1.29.1
+```
+
+Verify webhook configurations exist for both meshes:
+
+```bash
+kubectl get validatingwebhookconfigurations
+kubectl get mutatingwebhookconfigurations
+```
+
+You should see separate webhooks for each mesh:
+- `istio-validator-mesh1-istio-system1`
+- `istio-validator-mesh2-istio-system2`
+- `istio-sidecar-injector-mesh1-istio-system1`
+- `istio-sidecar-injector-mesh2-istio-system2`
+
+## Deploy Applications
+
+<Steps>
+  <Step title="Create Application Namespaces">
+    ```bash
+    kubectl create namespace app1
+    kubectl create namespace app2a
+    kubectl create namespace app2b
+    ```
+  </Step>
+
+  <Step title="Label for Discovery">
+    Label namespaces so the correct control plane discovers them:
+    
+    ```bash
+    kubectl label namespace app1 mesh=mesh1
+    kubectl label namespace app2a mesh=mesh2
+    kubectl label namespace app2b mesh=mesh2
+    ```
+  </Step>
+
+  <Step title="Enable Sidecar Injection">
+    Label namespaces to enable injection by the corresponding control plane:
+    
+    ```bash
+    kubectl label namespace app1 istio.io/rev=mesh1
+    kubectl label namespace app2a istio.io/rev=mesh2
+    kubectl label namespace app2b istio.io/rev=mesh2
+    ```
+  </Step>
+
+  <Step title="Deploy Sample Applications">
+    Deploy curl and httpbin to each namespace:
+    
+    ```bash
+    # Deploy to app1 (mesh1)
+    kubectl -n app1 apply -f https://raw.githubusercontent.com/istio/istio/master/samples/curl/curl.yaml
+    kubectl -n app1 apply -f https://raw.githubusercontent.com/istio/istio/master/samples/httpbin/httpbin.yaml
+    
+    # Deploy to app2a (mesh2)
+    kubectl -n app2a apply -f https://raw.githubusercontent.com/istio/istio/master/samples/curl/curl.yaml
+    kubectl -n app2a apply -f https://raw.githubusercontent.com/istio/istio/master/samples/httpbin/httpbin.yaml
+    
+    # Deploy to app2b (mesh2)
+    kubectl -n app2b apply -f https://raw.githubusercontent.com/istio/istio/master/samples/curl/curl.yaml
+    kubectl -n app2b apply -f https://raw.githubusercontent.com/istio/istio/master/samples/httpbin/httpbin.yaml
+    ```
+  </Step>
+</Steps>
+
+### Verify Sidecar Injection
+
+Check that sidecars have been injected into all pods:
+
+```bash
+kubectl get pods -n app1
+kubectl get pods -n app2a
+kubectl get pods -n app2b
+```
+
+Each pod should show `2/2` in the READY column:
+
+```
+NAME                       READY   STATUS    RESTARTS   AGE
+curl-5b549b49b8-mg7nl      2/2     Running   0          102s
+httpbin-7b549f7859-h6hnk   2/2     Running   0          89s
+```
+
+## Validation
+
+### Verify Control Plane Mapping
+
+Use `istioctl` to confirm pods are connected to the correct control plane:
+
+<CodeGroup>
+```bash mesh1 Proxies
+istioctl ps -i istio-system1
+```
+
+```bash mesh2 Proxies
+istioctl ps -i istio-system2
+```
+</CodeGroup>
+
+Output for mesh1 should show only app1 pods:
+
+```
+NAME                              CLUSTER     CDS         LDS         EDS         RDS         ISTIOD
+curl-5b549b49b8-mg7nl.app1        Kubernetes  SYNCED      SYNCED      SYNCED      SYNCED      istiod-mesh1-xxx
+httpbin-7b549f7859-h6hnk.app1     Kubernetes  SYNCED      SYNCED      SYNCED      SYNCED      istiod-mesh1-xxx
+```
+
+Output for mesh2 should show app2a and app2b pods:
+
+```
+NAME                               CLUSTER     CDS         LDS         EDS         RDS         ISTIOD
+curl-5b549b49b8-2hlvm.app2a        Kubernetes  SYNCED      SYNCED      SYNCED      SYNCED      istiod-mesh2-xxx
+curl-5b549b49b8-xnzzk.app2b        Kubernetes  SYNCED      SYNCED      SYNCED      SYNCED      istiod-mesh2-xxx
+httpbin-7b549f7859-bgblg.app2a     Kubernetes  SYNCED      SYNCED      SYNCED      SYNCED      istiod-mesh2-xxx
+httpbin-7b549f7859-7k5gf.app2b     Kubernetes  SYNCED      SYNCED      SYNCED      SYNCED      istiod-mesh2-xxx
+```
+
+### Test Mesh Isolation
+
+Due to strict mTLS and separate CAs, applications in mesh1 cannot communicate with applications in mesh2:
+
+<CodeGroup>
+```bash Cross-Mesh (Should Fail)
+kubectl -n app2a exec deploy/curl -c curl -- curl -sI http://httpbin.app1:8000
+```
+
+```bash Same-Mesh (Should Succeed)
+kubectl -n app2a exec deploy/curl -c curl -- curl -sI http://httpbin.app2b:8000
+```
+</CodeGroup>
+
+Cross-mesh communication should return `503 Service Unavailable`:
+
+```
+HTTP/1.1 503 Service Unavailable
+content-length: 95
+content-type: text/plain
+server: envoy
+```
+
+Same-mesh communication should succeed:
+
+```
+HTTP/1.1 200 OK
+access-control-allow-credentials: true
+access-control-allow-origin: *
+content-type: text/html; charset=utf-8
+server: envoy
+```
+
+<Note>
+This isolation is intentional and demonstrates strong multi-tenancy. Each mesh operates independently with its own trust domain.
+</Note>
+
+## Architecture Considerations
+
+### Resource Isolation
+
+- Each control plane consumes cluster resources (CPU, memory)
+- Plan for approximately 0.5-1 CPU core and 2GB memory per control plane
+- Use resource requests and limits to prevent resource contention
+
+### Namespace Planning
+
+- Each control plane requires its own system namespace
+- Application namespaces must have clear ownership (single mesh)
+- Use consistent labeling conventions across your organization
+
+### Certificate Management
+
+- Each mesh generates its own root CA by default
+- For shared trust, use a common external CA
+- Rotate certificates independently per mesh
+
+## Use Cases
+
+<CardGroup cols={2}>
+  <Card title="Multi-Tenancy" icon="users">
+    Isolate different teams or business units with independent meshes and policies
+  </Card>
+  <Card title="Canary Meshes" icon="flask">
+    Test new Istio versions or configurations alongside production
+  </Card>
+  <Card title="Compliance Zones" icon="lock">
+    Separate PCI/HIPAA workloads from general applications
+  </Card>
+  <Card title="Development Stages" icon="code-branch">
+    Run dev, staging, and prod meshes on shared infrastructure
+  </Card>
+</CardGroup>
+
+## Cleanup
+
+To remove all meshes and applications:
+
+```bash
+kubectl delete istio mesh1 mesh2
+kubectl delete namespace istio-system1 istio-system2
+kubectl delete namespace app1 app2a app2b
+```
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Multi-Cluster" icon="globe" href="/advanced/multi-cluster">
+    Deploy meshes across multiple Kubernetes clusters
+  </Card>
+  <Card title="Revisions and Upgrades" icon="arrow-up" href="/operations/upgrades">
+    Manage mesh versions with revisions
+  </Card>
+</CardGroup>
